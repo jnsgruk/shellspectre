@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}oxilog{% endblock %}</title>
+    <style>{{ styles|safe }}</style>
+    <script type="module" src="https://cdn.jsdelivr.net/npm/@starfederation/datastar@1"></script>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen">
+    <header class="border-b border-gray-800 px-6 py-4">
+        <div class="flex items-center justify-between max-w-7xl mx-auto">
+            <h1 class="text-xl font-mono font-bold tracking-tight">oxilog</h1>
+            <div class="text-sm text-gray-400">session recorder</div>
+        </div>
+    </header>
+    <main class="max-w-7xl mx-auto px-6 py-8">
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

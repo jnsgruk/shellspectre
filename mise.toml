@@ -13,7 +13,7 @@ run = "cargo build"
 
 [tasks.test]
 description = "Run userspace tests"
-run = "cargo test -p oxilog -p oxilog-common"
+run = "cargo test -p oxilog -p oxilog-common -p oxilog-web"
 
 [tasks.test-system]
 description = "Run system integration tests (requires LXD)"
@@ -53,12 +53,25 @@ while IFS= read -r f; do
     echo "ERROR: $f has $lines lines (max $max)"
     failed=1
   fi
-done < <(find oxilog oxilog-common oxilog-ebpf tests/system -name '*.rs' 2>/dev/null)
+done < <(find oxilog oxilog-common oxilog-ebpf oxilog-web tests/system -name '*.rs' 2>/dev/null)
 if [ "$failed" -eq 1 ]; then
   exit 1
 fi
 echo "All files within $max line limit"
 """
+
+[tasks.build-web]
+description = "Build the web crate (downloads Tailwind on first run)"
+run = "cargo build -p oxilog-web"
+
+[tasks.test-web]
+description = "Run web crate tests"
+run = "cargo test -p oxilog-web"
+
+[tasks.run-web]
+description = "Run the web UI server"
+depends = ["build-web"]
+run = "cargo run -p oxilog-web --"
 
 [tasks.run]
 description = "Build and run oxilog"

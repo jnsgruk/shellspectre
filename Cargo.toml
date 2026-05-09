@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["oxilog", "oxilog-common", "tests/system"]
+members = ["oxilog", "oxilog-common", "oxilog-web", "tests/system"]
 exclude = ["oxilog-ebpf"]
 
 [workspace.lints.clippy]
