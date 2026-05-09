@@ -1,24 +1,31 @@
-<tr id="ev-{{ event.id }}" class="border-b border-gray-800 hover:bg-gray-900/50">
+<tr id="ev-{{ event.id }}"
+    class="border-b border-gray-800 hover:bg-gray-900/50 cursor-pointer"
+    data-on:click="
+        const detail = document.getElementById('detail-{{ event.id }}');
+        const btn = document.getElementById('btn-{{ event.id }}');
+        if (detail.classList.contains('hidden')) {
+            @get('/api/v1/events/{{ event.id }}/detail');
+            detail.classList.remove('hidden');
+            btn.classList.add('rotate-90');
+        } else {
+            detail.innerHTML = '<td colspan=\'6\'></td>';
+            detail.classList.add('hidden');
+            btn.classList.remove('rotate-90');
+        }
+    "
+>
     <td class="px-3 py-2 text-sm font-mono text-gray-300 whitespace-nowrap">
-        <button
-            class="mr-1 text-gray-500 hover:text-gray-300 focus:outline-none"
-            data-on:click="
-                const detail = document.getElementById('detail-{{ event.id }}');
-                if (detail.classList.contains('hidden')) {
-                    @get('/api/v1/events/{{ event.id }}/detail');
-                    detail.classList.remove('hidden');
-                } else {
-                    detail.innerHTML = '<td colspan=\'5\'></td>';
-                    detail.classList.add('hidden');
-                }
-            "
-            aria-label="Toggle detail for event {{ event.id }}"
-        >▶</button>
+        <span
+            class="mr-1 text-gray-500 transition-transform duration-150 inline-block"
+            id="btn-{{ event.id }}"
+            aria-hidden="true"
+        ><svg class="inline w-2.5 h-2.5 fill-current" viewBox="0 0 10 10"><polygon points="0,0 10,5 0,10"/></svg></span>
         {{ event.timestamp }}
     </td>
     <td class="px-3 py-2 text-sm text-gray-400">{{ event.user }}</td>
-    <td class="px-3 py-2 text-sm font-mono text-gray-200" title="{{ event.command_full }}">
-        {{ event.command_display }}
+    <td class="px-3 py-2 text-sm font-mono font-bold text-gray-200 whitespace-nowrap">{{ event.command_name }}</td>
+    <td class="px-3 py-2 text-sm font-mono text-gray-400 max-w-0 w-full overflow-hidden" title="{{ event.command_dir }}{{ event.command_full }}">
+        <span class="block truncate">{% if !event.command_dir.is_empty() %}<span class="text-gray-600">{{ event.command_dir }}</span>{% endif %}{% if !event.command_args.is_empty() %}<span class="text-gray-400">{{ event.command_args }}</span>{% endif %}</span>
     </td>
     <td class="px-3 py-2 text-sm font-mono {{ event.exit_code_class }}">{{ event.exit_code }}</td>
     <td class="px-3 py-2 text-sm font-mono text-gray-500" title="{{ event.session_id }}">
@@ -26,5 +33,5 @@
     </td>
 </tr>
 <tr id="detail-{{ event.id }}" class="hidden">
-    <td colspan="5"></td>
+    <td colspan="6"></td>
 </tr>

@@ -13,6 +13,9 @@ mod filter;
 mod session;
 mod sqlite_sink;
 
+#[cfg(feature = "web")]
+use oxilog_web::ServerConfig;
+
 #[derive(Debug, Parser)]
 #[command(name = "oxilog", about = "Passive Linux session recorder")]
 struct Cli {
@@ -36,10 +39,23 @@ enum Command {
         /// SQLite database path (for sqlite output)
         #[arg(long, default_value = "oxilog.db")]
         db_path: String,
+        /// Also start the web UI server (requires --output sqlite)
+        #[cfg(feature = "web")]
+        #[arg(long)]
+        web: bool,
+        /// Port for the embedded web UI (requires --web)
+        #[cfg(feature = "web")]
+        #[arg(long, default_value = "3000")]
+        web_port: u16,
+        /// Bind address for the embedded web UI (requires --web)
+        #[cfg(feature = "web")]
+        #[arg(long, default_value = "127.0.0.1")]
+        web_bind: String,
     },
     /// Check kernel and BPF capability status
     Check,
     /// Start the web UI server
+    #[cfg(feature = "web")]
     Web {
         /// Port to listen on
         #[arg(long, default_value = "3000")]
@@ -69,6 +85,12 @@ fn main() -> Result<()> {
             filter_ancestor,
             output,
             db_path,
+            #[cfg(feature = "web")]
+            web,
+            #[cfg(feature = "web")]
+            web_port,
+            #[cfg(feature = "web")]
+            web_bind,
         } => {
             let filter_config = filter::FilterConfig {
                 filter_pty,
@@ -79,9 +101,28 @@ fn main() -> Result<()> {
             } else {
                 None
             };
-            run(filter_config, sink)?;
+
+            #[cfg(feature = "web")]
+            let web_config = {
+                if web {
+                    anyhow::ensure!(
+                        output == "sqlite",
+                        "--web requires --output sqlite"
+                    );
+                    let addr: std::net::SocketAddr =
+                        format!("{web_bind}:{web_port}").parse()?;
+                    Some(ServerConfig { bind: addr, db_path })
+                } else {
+                    None
+                }
+            };
+            #[cfg(not(feature = "web"))]
+            let web_config = ();
+
+            run(filter_config, sink, web_config)?;
         }
         Command::Check => check_capabilities()?,
+        #[cfg(feature = "web")]
         Command::Web {
             port,
             bind,
@@ -100,7 +141,12 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run(filter_config: filter::FilterConfig, sink: Option<sqlite_sink::SqliteSink>) -> Result<()> {
+fn run(
+    filter_config: filter::FilterConfig,
+    sink: Option<sqlite_sink::SqliteSink>,
+    #[cfg(feature = "web")] web_config: Option<ServerConfig>,
+    #[cfg(not(feature = "web"))] _web_config: (),
+) -> Result<()> {
     info!(
         filter_pty = filter_config.filter_pty,
         filter_ancestors = ?filter_config.filter_ancestors,
@@ -193,14 +239,30 @@ fn run(filter_config: filter::FilterConfig, sink: Option<sqlite_sink::SqliteSink
     let ring_buf = RingBuf::try_from(ebpf.take_map("EVENTS").context("EVENTS map not found")?)?;
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(consume_events(ring_buf, filter_config, sink))
+    rt.block_on(consume_events(
+        ring_buf,
+        filter_config,
+        sink,
+        #[cfg(feature = "web")]
+        web_config,
+    ))
 }
 
 async fn consume_events(
     mut ring_buf: RingBuf<aya::maps::MapData>,
     filter_config: filter::FilterConfig,
     sink: Option<sqlite_sink::SqliteSink>,
+    #[cfg(feature = "web")] web_config: Option<ServerConfig>,
 ) -> Result<()> {
+    #[cfg(feature = "web")]
+    if let Some(config) = web_config {
+        tokio::spawn(async move {
+            if let Err(e) = oxilog_web::start_server(config).await {
+                tracing::error!(%e, "web server error");
+            }
+        });
+    }
+
     let async_fd = AsyncFd::new(ring_buf.as_raw_fd())?;
     let mut correlator = session::SessionCorrelator::new();
 
@@ -269,21 +331,23 @@ fn handle_exec_event(
         }
     }
 
-    info!(
-        event = "exec",
-        session_id = %session_id,
-        pid = exec.pid,
-        ppid = exec.ppid,
-        uid = exec.uid,
-        gid = exec.gid,
-        euid = exec.euid,
-        comm = %exec.comm,
-        tty_nr = exec.tty_nr,
-        cgroup_id = exec.cgroup_id,
-        filename = %exec.filename,
-        argv = ?exec.argv,
-        retval = exec.retval,
-    );
+    if sink.is_none() {
+        info!(
+            event = "exec",
+            session_id = %session_id,
+            pid = exec.pid,
+            ppid = exec.ppid,
+            uid = exec.uid,
+            gid = exec.gid,
+            euid = exec.euid,
+            comm = %exec.comm,
+            tty_nr = exec.tty_nr,
+            cgroup_id = exec.cgroup_id,
+            filename = %exec.filename,
+            argv = ?exec.argv,
+            retval = exec.retval,
+        );
+    }
 
     if let Some(db) = sink {
         let si = sqlite_sink::SessionInfo {
@@ -336,19 +400,21 @@ fn handle_exit_event(
     }
 
     correlator.on_exit(exit.pid);
-    info!(
-        event = "exit",
-        session_id = %session_id,
-        pid = exit.pid,
-        ppid = exit.ppid,
-        uid = exit.uid,
-        gid = exit.gid,
-        euid = exit.euid,
-        comm = %exit.comm,
-        tty_nr = exit.tty_nr,
-        cgroup_id = exit.cgroup_id,
-        exit_code = exit.exit_code,
-    );
+    if sink.is_none() {
+        info!(
+            event = "exit",
+            session_id = %session_id,
+            pid = exit.pid,
+            ppid = exit.ppid,
+            uid = exit.uid,
+            gid = exit.gid,
+            euid = exit.euid,
+            comm = %exit.comm,
+            tty_nr = exit.tty_nr,
+            cgroup_id = exit.cgroup_id,
+            exit_code = exit.exit_code,
+        );
+    }
 
     if let Some(db) = sink
         && let Err(e) = db.insert_exit(&session_id, &exit)
@@ -389,22 +455,24 @@ fn handle_io_event(
     }
 
     let data_str = String::from_utf8_lossy(&io.data);
-    info!(
-        event = if event_type == EventType::Read { "read" } else { "write" },
-        session_id = %session_id,
-        pid = io.pid,
-        ppid = io.ppid,
-        uid = io.uid,
-        gid = io.gid,
-        euid = io.euid,
-        comm = %io.comm,
-        tty_nr = io.tty_nr,
-        cgroup_id = io.cgroup_id,
-        fd = io.fd,
-        data_len = io.data.len(),
-        count = io.count,
-        data = %data_str,
-    );
+    if sink.is_none() {
+        info!(
+            event = if event_type == EventType::Read { "read" } else { "write" },
+            session_id = %session_id,
+            pid = io.pid,
+            ppid = io.ppid,
+            uid = io.uid,
+            gid = io.gid,
+            euid = io.euid,
+            comm = %io.comm,
+            tty_nr = io.tty_nr,
+            cgroup_id = io.cgroup_id,
+            fd = io.fd,
+            data_len = io.data.len(),
+            count = io.count,
+            data = %data_str,
+        );
+    }
 
     if let Some(db) = sink {
         let type_str = if event_type == EventType::Read {

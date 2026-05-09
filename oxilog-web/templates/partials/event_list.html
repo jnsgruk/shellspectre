@@ -9,8 +9,9 @@
                 <th class="px-3 py-3">User</th>
                 <th class="px-3 py-3 cursor-pointer hover:text-gray-200"
                     data-on:click="@get('{{ nav.sort_url_comm() }}')">
-                    Command{{ nav.sort_indicator_comm() }}
+                    Cmd{{ nav.sort_indicator_comm() }}
                 </th>
+                <th class="px-3 py-3">Args</th>
                 <th class="px-3 py-3 cursor-pointer hover:text-gray-200"
                     data-on:click="@get('{{ nav.sort_url_exit_code() }}')">
                     Exit{{ nav.sort_indicator_exit_code() }}
@@ -21,7 +22,7 @@
         <tbody id="event-rows">
             {% if paginated.items.is_empty() %}
             <tr>
-                <td colspan="5" class="px-3 py-12 text-center text-gray-500">
+                <td colspan="6" class="px-3 py-12 text-center text-gray-500">
                     No events found.
                 </td>
             </tr>

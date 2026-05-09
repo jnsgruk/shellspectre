@@ -21,9 +21,14 @@ pub struct EventSummaryView {
     pub user: String,
     /// Command name, or "\u{2014}" if absent.
     pub comm: String,
-    /// Command + args, truncated to `max_cmd_len` chars.
-    pub command_display: String,
-    /// Full command + args (for tooltip).
+    /// Basename of the executed binary, e.g. "ps", "cargo". Bold in UI.
+    pub command_name: String,
+    /// Directory portion of the full path, e.g. "/usr/bin/". Empty when
+    /// only a bare name is available. Rendered in a lighter font.
+    pub command_dir: String,
+    /// Arguments (argv[1..]), truncated, for display after the name.
+    pub command_args: String,
+    /// Full command + args (for tooltip on the cell).
     pub command_full: String,
     /// Exit code display: "0", "1", "\u{2014}" (for None).
     pub exit_code: String,
@@ -31,17 +36,64 @@ pub struct EventSummaryView {
     pub exit_code_class: &'static str,
 }
 
-/// Maximum length for the truncated command display.
-const MAX_CMD_DISPLAY_LEN: usize = 40;
+/// Maximum length for the truncated args display.
+const MAX_ARGS_DISPLAY_LEN: usize = 40;
 
 impl EventSummaryView {
     /// Create a view from a domain `EventSummary`.
     pub fn from_summary(s: &EventSummary) -> Self {
         let comm = s.comm.clone().unwrap_or_else(|| "\u{2014}".to_owned());
 
-        // Build full command string from filename + argv.
-        let command_full = build_command_string(s);
-        let command_display = truncate(&command_full, MAX_CMD_DISPLAY_LEN);
+        // Resolve the full path: prefer filename, fall back to argv[0], then comm.
+        let full_path = s
+            .filename
+            .as_deref()
+            .filter(|f| !f.is_empty())
+            .or_else(|| {
+                s.argv.as_deref().and_then(|a| {
+                    serde_json::from_str::<Vec<String>>(a)
+                        .ok()
+                        .and_then(|v| v.into_iter().next())
+                        .as_deref()
+                        .filter(|p| !p.is_empty())
+                        .map(|_| s.argv.as_deref().unwrap())
+                })
+            })
+            .unwrap_or("")
+            .to_owned();
+
+        // Split path into directory and basename.
+        // Only treat as a path if it contains a '/'.
+        let (command_dir, command_name) = if full_path.contains('/') {
+            let dir = full_path
+                .rfind('/')
+                .map(|i| format!("{}/", &full_path[..i]))
+                .unwrap_or_default();
+            let name = full_path
+                .rfind('/')
+                .map(|i| full_path[i + 1..].to_owned())
+                .unwrap_or_else(|| full_path.clone());
+            (dir, name)
+        } else {
+            // Bare name (e.g. "ps" without a path) — no dir to show.
+            let name = if full_path.is_empty() {
+                comm.clone()
+            } else {
+                full_path.clone()
+            };
+            (String::new(), name)
+        };
+
+        // Args are argv[1..], joined with spaces.
+        let command_args = parse_args_tail(s);
+        let command_args = truncate(&command_args, MAX_ARGS_DISPLAY_LEN);
+
+        // Full command for tooltip: name + args (dir shown separately in UI).
+        let command_full = if command_args.is_empty() {
+            command_name.clone()
+        } else {
+            format!("{} {}", command_name, command_args)
+        };
 
         // Truncate session ID for column display.
         let session_id_short = if s.session_id.len() > 10 {
@@ -71,7 +123,9 @@ impl EventSummaryView {
             session_id: s.session_id.clone(),
             user: resolve_uid(s.uid),
             comm,
-            command_display,
+            command_name,
+            command_dir,
+            command_args,
             command_full,
             exit_code,
             exit_code_class,
@@ -79,7 +133,7 @@ impl EventSummaryView {
     }
 }
 
-/// Build a display string from filename/argv.
+/// Build a display string from filename/argv — used by the detail view.
 ///
 /// Prefers argv if available (JSON array), falls back to filename, then comm.
 pub fn build_command_string(s: &EventSummary) -> String {
@@ -96,6 +150,17 @@ pub fn build_command_string(s: &EventSummary) -> String {
     }
     // Fallback to comm.
     s.comm.clone().unwrap_or_default()
+}
+
+/// Extract argv[1..] as a space-joined string (the arguments after the binary name).
+fn parse_args_tail(s: &EventSummary) -> String {
+    if let Some(ref argv_str) = s.argv
+        && let Ok(argv) = serde_json::from_str::<Vec<String>>(argv_str)
+        && argv.len() > 1
+    {
+        return argv[1..].join(" ");
+    }
+    String::new()
 }
 
 /// Formatted event detail for the expansion panel.
@@ -127,14 +192,14 @@ pub struct EventDetailView {
     pub exit_code: String,
     /// Whether there is any stdin data.
     pub has_stdin: bool,
-    /// Concatenated stdin data for display in `<pre>`.
-    pub stdin_data: String,
+    /// Stdin data rendered as HTML (ANSI escape codes converted to `<span>` tags).
+    pub stdin_html: String,
     /// Total stdin bytes.
     pub stdin_bytes: u64,
     /// Whether there is any stdout data.
     pub has_stdout: bool,
-    /// Concatenated stdout data for display in `<pre>`.
-    pub stdout_data: String,
+    /// Stdout/stderr data rendered as HTML (ANSI escape codes converted to `<span>` tags).
+    pub stdout_html: String,
     /// Total stdout bytes.
     pub stdout_bytes: u64,
 }
@@ -157,10 +222,13 @@ impl EventDetailView {
 
         let full_command = build_command_string(&d.summary);
 
-        let stdin_data: String = d.stdin_data.iter().map(|c| c.data.as_str()).collect();
+        let stdin_raw: String = d.stdin_data.iter().map(|c| c.data.as_str()).collect();
         let stdin_bytes: u64 = d.stdin_data.iter().map(|c| c.byte_count).sum();
-        let stdout_data: String = d.stdout_data.iter().map(|c| c.data.as_str()).collect();
+        let stdout_raw: String = d.stdout_data.iter().map(|c| c.data.as_str()).collect();
         let stdout_bytes: u64 = d.stdout_data.iter().map(|c| c.byte_count).sum();
+
+        let stdin_html = ansi_to_html(&stdin_raw);
+        let stdout_html = ansi_to_html(&stdout_raw);
 
         Self {
             id: d.summary.id,
@@ -177,13 +245,31 @@ impl EventDetailView {
             exit_code: d.summary.exit_code
                 .map_or_else(|| "\u{2014}".to_owned(), |c| c.to_string()),
             has_stdin: !d.stdin_data.is_empty(),
-            stdin_data,
+            stdin_html,
             stdin_bytes,
             has_stdout: !d.stdout_data.is_empty(),
-            stdout_data,
+            stdout_html,
             stdout_bytes,
         }
     }
+}
+
+/// Convert a raw string (possibly containing ANSI escape sequences) to HTML.
+///
+/// ANSI SGR codes (colours, bold, etc.) become `<span style="...">` elements.
+/// 4-bit colours use CSS custom properties with an `ansi-` prefix
+/// (e.g. `var(--ansi-red, #fallback)`), so the caller can theme them via CSS.
+/// If conversion fails, the text is HTML-escaped and returned as plain text.
+fn ansi_to_html(raw: &str) -> String {
+    ansi_to_html::Converter::new()
+        .four_bit_var_prefix(Some("ansi-".to_owned()))
+        .convert(raw)
+        .unwrap_or_else(|_| {
+            // Fallback: HTML-escape the raw bytes so nothing leaks into the DOM.
+            raw.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+        })
 }
 
 /// Truncate a string to `max_len` chars, appending "\u{2026}" if truncated.
@@ -234,7 +320,56 @@ use crate::domain::event::{EventDetail, EventSummary, IoChunk};
     #[test]
     fn from_summary_builds_command_from_argv() {
         let view = EventSummaryView::from_summary(&make_summary());
+        // argv is ["cargo","build","--release"], filename is /usr/bin/cargo
+        assert_eq!(view.command_name, "cargo");
+        assert_eq!(view.command_dir, "/usr/bin/");
+        assert_eq!(view.command_args, "build --release");
         assert_eq!(view.command_full, "cargo build --release");
+    }
+
+    #[test]
+    fn from_summary_fallback_to_filename() {
+        let mut s = make_summary();
+        s.argv = None;
+        let view = EventSummaryView::from_summary(&s);
+        assert_eq!(view.command_name, "cargo");
+        assert_eq!(view.command_dir, "/usr/bin/");
+        assert_eq!(view.command_args, "");
+        assert_eq!(view.command_full, "cargo");
+    }
+
+    #[test]
+    fn from_summary_fallback_to_comm() {
+        let mut s = make_summary();
+        s.argv = None;
+        s.filename = None;
+        let view = EventSummaryView::from_summary(&s);
+        assert_eq!(view.command_name, "cargo");
+        assert_eq!(view.command_dir, "");
+        assert_eq!(view.command_args, "");
+        assert_eq!(view.command_full, "cargo");
+    }
+
+    #[test]
+    fn from_summary_bare_command_no_dir() {
+        let mut s = make_summary();
+        s.filename = Some("ps".to_owned());
+        s.argv = Some(r#"["ps","-ao","ppid,args"]"#.to_owned());
+        let view = EventSummaryView::from_summary(&s);
+        assert_eq!(view.command_name, "ps");
+        assert_eq!(view.command_dir, "");
+        assert_eq!(view.command_args, "-ao ppid,args");
+    }
+
+    #[test]
+    fn from_summary_snap_path() {
+        let mut s = make_summary();
+        s.filename = Some("/snap/mise/111/bin/mise".to_owned());
+        s.argv = Some(r#"["/snap/mise/111/bin/mise","hook-env","-s","fish"]"#.to_owned());
+        let view = EventSummaryView::from_summary(&s);
+        assert_eq!(view.command_name, "mise");
+        assert_eq!(view.command_dir, "/snap/mise/111/bin/");
+        assert_eq!(view.command_args, "hook-env -s fish");
     }
 
     #[test]
@@ -260,23 +395,6 @@ use crate::domain::event::{EventDetail, EventSummary, IoChunk};
         let view = EventSummaryView::from_summary(&s);
         assert_eq!(view.exit_code, "\u{2014}");
         assert_eq!(view.exit_code_class, "text-gray-500");
-    }
-
-    #[test]
-    fn from_summary_fallback_to_filename() {
-        let mut s = make_summary();
-        s.argv = None;
-        let view = EventSummaryView::from_summary(&s);
-        assert_eq!(view.command_full, "/usr/bin/cargo");
-    }
-
-    #[test]
-    fn from_summary_fallback_to_comm() {
-        let mut s = make_summary();
-        s.argv = None;
-        s.filename = None;
-        let view = EventSummaryView::from_summary(&s);
-        assert_eq!(view.command_full, "cargo");
     }
 
     #[test]
@@ -333,7 +451,8 @@ use crate::domain::event::{EventDetail, EventSummary, IoChunk};
     #[test]
     fn stdout_data_concatenated() {
         let view = EventDetailView::from_detail(&make_detail());
-        assert_eq!(view.stdout_data, "TOP SECRET\n");
+        // Plain text with no ANSI codes passes through as-is.
+        assert_eq!(view.stdout_html, "TOP SECRET\n");
         assert_eq!(view.stdout_bytes, 11);
         assert!(view.has_stdout);
     }
@@ -342,7 +461,30 @@ use crate::domain::event::{EventDetail, EventSummary, IoChunk};
     fn no_stdin_data() {
         let view = EventDetailView::from_detail(&make_detail());
         assert!(!view.has_stdin);
-        assert!(view.stdin_data.is_empty());
+        assert!(view.stdin_html.is_empty());
+    }
+
+    #[test]
+    fn ansi_colour_converted_to_span() {
+        // Bold green "ok" followed by reset.
+        let html = ansi_to_html("\x1b[1;32mok\x1b[0m");
+        assert!(html.contains("<span"), "should produce span tags: {html}");
+        assert!(html.contains("ok"), "should preserve text: {html}");
+        assert!(!html.contains("\x1b"), "should strip escape sequences: {html}");
+        // 4-bit colours should use CSS custom properties with the ansi- prefix.
+        assert!(html.contains("--ansi-"), "should use --ansi- CSS vars: {html}");
+    }
+
+    #[test]
+    fn ansi_plain_text_unchanged() {
+        let html = ansi_to_html("hello world\n");
+        assert_eq!(html, "hello world\n");
+    }
+
+    #[test]
+    fn ansi_html_special_chars_escaped() {
+        let html = ansi_to_html("<script>alert(1)</script>");
+        assert!(!html.contains("<script>"), "should HTML-escape special chars: {html}");
     }
 
     #[test]

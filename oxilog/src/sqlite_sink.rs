@@ -140,6 +140,20 @@ impl SqliteSink {
             )
             .context("insert exit event")?;
 
+        // Backfill exit_code onto the most recent exec row for this pid,
+        // so the web UI can read it without joining the exit row.
+        self.conn
+            .execute(
+                "UPDATE events SET exit_code = ?1 \
+                 WHERE id = ( \
+                     SELECT id FROM events \
+                     WHERE session_id = ?2 AND pid = ?3 AND event_type = 'exec' \
+                     ORDER BY id DESC LIMIT 1 \
+                 )",
+                rusqlite::params![event.exit_code, session_id, event.pid],
+            )
+            .context("backfill exit_code onto exec row")?;
+
         // Update session ended_at.
         self.conn
             .execute(
@@ -343,6 +357,35 @@ mod tests {
         assert_eq!(event_type, "write");
         assert_eq!(fd, 1);
         assert_eq!(data, "hello world\n");
+        Ok(())
+    }
+
+    #[test]
+    fn insert_exit_backfills_exit_code_on_exec_row() -> Result<()> {
+        let sink = SqliteSink::open_in_memory()?;
+        sink.ensure_session(&test_session("ox_abc"))?;
+        sink.insert_exec("ox_abc", &sample_exec())?;
+
+        let exit = ParsedExitEvent {
+            pid: 100,
+            ppid: 1,
+            uid: 1000,
+            gid: 1000,
+            euid: 1000,
+            comm: "ls".into(),
+            tty_nr: 42,
+            cgroup_id: 99,
+            exit_code: 42,
+        };
+        sink.insert_exit("ox_abc", &exit)?;
+
+        // The exec row for pid 100 must now have exit_code = 42.
+        let exit_code: Option<i64> = sink.conn.query_row(
+            "SELECT exit_code FROM events WHERE session_id = ?1 AND event_type = 'exec' AND pid = ?2",
+            rusqlite::params!["ox_abc", 100i64],
+            |r| r.get(0),
+        )?;
+        assert_eq!(exit_code, Some(42), "exec row should have exit_code backfilled");
         Ok(())
     }
 

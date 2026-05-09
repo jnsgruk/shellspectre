@@ -120,6 +120,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/events/live", get(live_events))
         .route("/api/v1/events/{id}/detail", get(get_event_detail))
+        .route("/api/v1/events/{id}/raw", get(get_event_raw))
 }
 
 /// Query parameters for the live events endpoint.
@@ -226,6 +227,53 @@ async fn live_events(
     });
 
     Sse::new(event_stream).keep_alive(KeepAlive::default())
+}
+
+/// Query parameters for the raw IO endpoint.
+#[derive(Debug, Deserialize)]
+pub struct RawParams {
+    /// Which stream to return: "stdin" or "stdout" (default).
+    #[serde(default = "default_stream")]
+    pub stream: String,
+}
+
+fn default_stream() -> String {
+    "stdout".to_owned()
+}
+
+/// `GET /api/v1/events/{id}/raw?stream=stdout`
+///
+/// Returns the raw (plain text, ANSI stripped) IO data for an event.
+/// Opens in a new browser tab via the "raw ↗" link in the detail panel.
+async fn get_event_raw(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Query(params): Query<RawParams>,
+) -> Response {
+    let detail = match state.repo.get_detail(id) {
+        Ok(Some(d)) => d,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(err) => {
+            tracing::error!(%err, id, "failed to get event for raw view");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let raw: String = if params.stream == "stdin" {
+        detail.stdin_data.iter().map(|c| c.data.as_str()).collect()
+    } else {
+        detail.stdout_data.iter().map(|c| c.data.as_str()).collect()
+    };
+
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        raw,
+    )
+        .into_response()
 }
 
 /// Askama template for the event detail fragment.

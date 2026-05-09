@@ -6,9 +6,13 @@ edition = "2024"
 [lints]
 workspace = true
 
+[features]
+default = ["web"]
+web = ["dep:oxilog-web"]
+
 [dependencies]
 oxilog-common = { path = "../oxilog-common", features = ["std"] }
-oxilog-web = { path = "../oxilog-web" }
+oxilog-web = { path = "../oxilog-web", optional = true }
 anyhow = "1"
 aya = "0.13.1"
 aya-log = "0.2.1"

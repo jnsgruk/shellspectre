@@ -11,6 +11,7 @@ name = "oxilog-web"
 path = "src/main.rs"
 
 [dependencies]
+ansi-to-html = "0.2"
 anyhow = "1"
 askama = "0.13"
 axum = "0.8"

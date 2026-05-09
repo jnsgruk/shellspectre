@@ -143,3 +143,33 @@ async fn detail_no_io_shows_message() {
         "should show no-IO message"
     );
 }
+
+#[tokio::test]
+async fn raw_stdout_returns_plain_text() {
+    let (addr, pool) = support::start_test_server().await;
+    let id = seed_event_with_io(&pool);
+
+    let resp = reqwest::get(format!("http://{addr}/api/v1/events/{id}/raw?stream=stdout"))
+        .await
+        .expect("request");
+
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .expect("content-type")
+        .to_str()
+        .expect("str");
+    assert!(ct.contains("text/plain"), "should be plain text: {ct}");
+    let body = resp.text().await.expect("body");
+    assert_eq!(body, "TOP SECRET\n");
+}
+
+#[tokio::test]
+async fn raw_not_found_returns_404() {
+    let (addr, _pool) = support::start_test_server().await;
+    let resp = reqwest::get(format!("http://{addr}/api/v1/events/99999/raw"))
+        .await
+        .expect("request");
+    assert_eq!(resp.status(), 404);
+}
