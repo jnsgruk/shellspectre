@@ -15,13 +15,47 @@ pub const MAX_FILENAME_LEN: usize = 256;
 /// Kernel task comm field length.
 pub const COMM_LEN: usize = 16;
 
+/// Byte offsets resolved from kernel BTF at runtime, shared with eBPF
+/// via an array map. These allow reading `ppid`, `euid`, and `tty_nr`
+/// from `task_struct` without hardcoding kernel-version-specific offsets.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TaskFieldOffsets {
+    /// Offset of `real_parent` (ptr) in `task_struct`.
+    pub task_real_parent: u64,
+    /// Offset of `tgid` (pid_t) in `task_struct`.
+    pub task_tgid: u64,
+    /// Offset of `cred` (ptr) in `task_struct`.
+    pub task_cred: u64,
+    /// Offset of `euid` (kuid_t) in `cred`.
+    pub cred_euid: u64,
+    /// Offset of `signal` (ptr) in `task_struct`.
+    pub task_signal: u64,
+    /// Offset of `tty` (ptr) in `signal_struct`.
+    pub signal_tty: u64,
+    /// Offset of `index` (int) in `tty_struct`.
+    pub tty_index: u64,
+}
+
+/// Array map indices for [`TaskFieldOffsets`] fields, used with a
+/// `BPF_MAP_TYPE_ARRAY` of `u64` values.
+pub mod offset_idx {
+    pub const TASK_REAL_PARENT: u32 = 0;
+    pub const TASK_TGID: u32 = 1;
+    pub const TASK_CRED: u32 = 2;
+    pub const CRED_EUID: u32 = 3;
+    pub const TASK_SIGNAL: u32 = 4;
+    pub const SIGNAL_TTY: u32 = 5;
+    pub const TTY_INDEX: u32 = 6;
+    pub const COUNT: u32 = 7;
+}
+
 /// Discriminant for the type of event captured.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "std", derive(serde::Serialize, serde::Deserialize))]
 pub enum EventType {
     Exec = 0,
-    ExecResult = 1,
     Read = 2,
     Write = 3,
     Exit = 4,
@@ -84,7 +118,7 @@ impl EventHeader {
     }
 }
 
-/// Exec event payload — captures execve filename and arguments.
+/// Exec event payload — captures execve filename, arguments, and result.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ExecEvent {
@@ -92,14 +126,7 @@ pub struct ExecEvent {
     pub filename: [u8; MAX_FILENAME_LEN],
     pub argv: [[u8; MAX_ARG_LEN]; MAX_ARGV_COUNT],
     pub argc: u32,
-}
-
-/// Exec result event payload — captures execve return value.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-#[cfg_attr(feature = "std", derive(serde::Serialize, serde::Deserialize))]
-pub struct ExecResultEvent {
-    pub header: EventHeader,
+    _pad: u32,
     pub retval: i64,
 }
 
@@ -167,6 +194,11 @@ mod tests {
             80 + MAX_FILENAME_LEN + MAX_ARGV_COUNT * MAX_ARG_LEN,
             "argc"
         );
+        assert_eq!(
+            mem::offset_of!(ExecEvent, retval),
+            80 + MAX_FILENAME_LEN + MAX_ARGV_COUNT * MAX_ARG_LEN + 8,
+            "retval"
+        );
     }
 
     #[test]
@@ -177,10 +209,6 @@ mod tests {
     #[test]
     fn small_events_fit_bpf_stack() {
         let bpf_stack: usize = 512;
-        assert!(
-            mem::size_of::<ExecResultEvent>() <= bpf_stack,
-            "ExecResultEvent exceeds BPF stack"
-        );
         assert!(
             mem::size_of::<ExitEvent>() <= bpf_stack,
             "ExitEvent exceeds BPF stack"
