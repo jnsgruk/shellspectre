@@ -197,6 +197,13 @@ SYSCTL
         lxc(&["file", "push", local, &dest])?;
         Ok(())
     }
+
+    /// Pull a file from the VM to a local path.
+    pub fn pull_file(&self, remote: &str, local: &str) -> Result<()> {
+        let src = format!("{}/{}", self.name, remote.trim_start_matches('/'));
+        lxc(&["file", "pull", &src, local])?;
+        Ok(())
+    }
 }
 
 impl Drop for TestVm {

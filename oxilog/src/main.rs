@@ -11,6 +11,7 @@ mod btf;
 mod event;
 mod filter;
 mod session;
+mod sqlite_sink;
 
 #[derive(Debug, Parser)]
 #[command(name = "oxilog", about = "Passive Linux session recorder")]
@@ -29,6 +30,12 @@ enum Command {
         /// Only capture descendants of named processes (comma-separated)
         #[arg(long, value_delimiter = ',')]
         filter_ancestor: Vec<String>,
+        /// Output sink: stdout or sqlite (default: stdout)
+        #[arg(long, default_value = "stdout")]
+        output: String,
+        /// SQLite database path (for sqlite output)
+        #[arg(long, default_value = "oxilog.db")]
+        db_path: String,
     },
     /// Check kernel and BPF capability status
     Check,
@@ -48,12 +55,19 @@ fn main() -> Result<()> {
         Command::Run {
             filter_pty,
             filter_ancestor,
+            output,
+            db_path,
         } => {
             let filter_config = filter::FilterConfig {
                 filter_pty,
                 filter_ancestors: filter_ancestor,
             };
-            run(filter_config)?;
+            let sink = if output == "sqlite" {
+                Some(sqlite_sink::SqliteSink::open(&db_path)?)
+            } else {
+                None
+            };
+            run(filter_config, sink)?;
         }
         Command::Check => check_capabilities()?,
     }
@@ -61,7 +75,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run(filter_config: filter::FilterConfig) -> Result<()> {
+fn run(filter_config: filter::FilterConfig, sink: Option<sqlite_sink::SqliteSink>) -> Result<()> {
     info!(
         filter_pty = filter_config.filter_pty,
         filter_ancestors = ?filter_config.filter_ancestors,
@@ -154,12 +168,13 @@ fn run(filter_config: filter::FilterConfig) -> Result<()> {
     let ring_buf = RingBuf::try_from(ebpf.take_map("EVENTS").context("EVENTS map not found")?)?;
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(consume_events(ring_buf, filter_config))
+    rt.block_on(consume_events(ring_buf, filter_config, sink))
 }
 
 async fn consume_events(
     mut ring_buf: RingBuf<aya::maps::MapData>,
     filter_config: filter::FilterConfig,
+    sink: Option<sqlite_sink::SqliteSink>,
 ) -> Result<()> {
     let async_fd = AsyncFd::new(ring_buf.as_raw_fd())?;
     let mut correlator = session::SessionCorrelator::new();
@@ -172,7 +187,7 @@ async fn consume_events(
 
         // Drain all available events.
         while let Some(item) = ring_buf.next() {
-            handle_event(&item, &mut correlator, &filter_config);
+            handle_event(&item, &mut correlator, &filter_config, sink.as_ref());
         }
 
         guard.clear_ready();
@@ -183,6 +198,7 @@ fn handle_event(
     data: &[u8],
     correlator: &mut session::SessionCorrelator,
     filter_config: &filter::FilterConfig,
+    sink: Option<&sqlite_sink::SqliteSink>,
 ) {
     let Some(header) = event::parse_header(data) else {
         tracing::warn!(len = data.len(), "event too short, skipping");
@@ -190,10 +206,10 @@ fn handle_event(
     };
 
     match header.event_type {
-        EventType::Exec => handle_exec_event(data, correlator, filter_config),
-        EventType::Exit => handle_exit_event(data, correlator, filter_config),
+        EventType::Exec => handle_exec_event(data, correlator, filter_config, sink),
+        EventType::Exit => handle_exit_event(data, correlator, filter_config, sink),
         EventType::Read | EventType::Write => {
-            handle_io_event(data, correlator, filter_config, header.event_type);
+            handle_io_event(data, correlator, filter_config, sink, header.event_type);
         }
     }
 }
@@ -202,6 +218,7 @@ fn handle_exec_event(
     data: &[u8],
     correlator: &mut session::SessionCorrelator,
     filter_config: &filter::FilterConfig,
+    sink: Option<&sqlite_sink::SqliteSink>,
 ) {
     let Some(exec) = event::parse_exec_event(data) else {
         tracing::warn!("exec event too short");
@@ -242,12 +259,31 @@ fn handle_exec_event(
         argv = ?exec.argv,
         retval = exec.retval,
     );
+
+    if let Some(db) = sink {
+        let si = sqlite_sink::SessionInfo {
+            session_id: &session_id,
+            pid: exec.pid,
+            comm: &exec.comm,
+            uid: exec.uid,
+            euid: exec.euid,
+            tty_nr: exec.tty_nr,
+            cgroup_id: exec.cgroup_id,
+        };
+        if let Err(e) = db.ensure_session(&si) {
+            tracing::warn!(%e, "failed to ensure session");
+        }
+        if let Err(e) = db.insert_exec(&session_id, &exec) {
+            tracing::warn!(%e, "failed to insert exec event");
+        }
+    }
 }
 
 fn handle_exit_event(
     data: &[u8],
     correlator: &mut session::SessionCorrelator,
     filter_config: &filter::FilterConfig,
+    sink: Option<&sqlite_sink::SqliteSink>,
 ) {
     let Some(exit) = event::parse_exit_event(data) else {
         tracing::warn!("exit event too short");
@@ -288,12 +324,19 @@ fn handle_exit_event(
         cgroup_id = exit.cgroup_id,
         exit_code = exit.exit_code,
     );
+
+    if let Some(db) = sink
+        && let Err(e) = db.insert_exit(&session_id, &exit)
+    {
+        tracing::warn!(%e, "failed to insert exit event");
+    }
 }
 
 fn handle_io_event(
     data: &[u8],
     correlator: &mut session::SessionCorrelator,
     filter_config: &filter::FilterConfig,
+    sink: Option<&sqlite_sink::SqliteSink>,
     event_type: EventType,
 ) {
     let Some(io) = event::parse_io_event(data) else {
@@ -337,6 +380,17 @@ fn handle_io_event(
         count = io.count,
         data = %data_str,
     );
+
+    if let Some(db) = sink {
+        let type_str = if event_type == EventType::Read {
+            "read"
+        } else {
+            "write"
+        };
+        if let Err(e) = db.insert_io(&session_id, &io, type_str) {
+            tracing::warn!(%e, "failed to insert io event");
+        }
+    }
 }
 
 #[allow(clippy::print_stdout)]
