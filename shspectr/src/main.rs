@@ -141,6 +141,17 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn attach_tracepoint(ebpf: &mut Ebpf, name: &str) -> Result<()> {
+    let prog: &mut TracePoint = ebpf
+        .program_mut(name)
+        .with_context(|| format!("{name} program not found"))?
+        .try_into()?;
+    prog.load()?;
+    prog.attach("syscalls", name)?;
+    info!("attached {name} tracepoint");
+    Ok(())
+}
+
 #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 fn run(
     filter_config: filter::FilterConfig,
@@ -161,59 +172,12 @@ fn run(
 
     let mut ebpf = Ebpf::load(ebpf_bytes).context("failed to load eBPF program")?;
 
-    // Load and attach sys_enter_execve tracepoint.
-    let enter_prog: &mut TracePoint = ebpf
-        .program_mut("sys_enter_execve")
-        .context("sys_enter_execve program not found")?
-        .try_into()?;
-    enter_prog.load()?;
-    enter_prog.attach("syscalls", "sys_enter_execve")?;
-    info!("attached sys_enter_execve tracepoint");
-
-    // Load and attach sys_exit_execve tracepoint.
-    let exit_prog: &mut TracePoint = ebpf
-        .program_mut("sys_exit_execve")
-        .context("sys_exit_execve program not found")?
-        .try_into()?;
-    exit_prog.load()?;
-    exit_prog.attach("syscalls", "sys_exit_execve")?;
-    info!("attached sys_exit_execve tracepoint");
-
-    // Load and attach sys_enter_exit_group tracepoint.
-    let exit_group_prog: &mut TracePoint = ebpf
-        .program_mut("sys_enter_exit_group")
-        .context("sys_enter_exit_group program not found")?
-        .try_into()?;
-    exit_group_prog.load()?;
-    exit_group_prog.attach("syscalls", "sys_enter_exit_group")?;
-    info!("attached sys_enter_exit_group tracepoint");
-
-    // Load and attach sys_enter_write tracepoint.
-    let write_prog: &mut TracePoint = ebpf
-        .program_mut("sys_enter_write")
-        .context("sys_enter_write program not found")?
-        .try_into()?;
-    write_prog.load()?;
-    write_prog.attach("syscalls", "sys_enter_write")?;
-    info!("attached sys_enter_write tracepoint");
-
-    // Load and attach sys_enter_read tracepoint.
-    let read_enter_prog: &mut TracePoint = ebpf
-        .program_mut("sys_enter_read")
-        .context("sys_enter_read program not found")?
-        .try_into()?;
-    read_enter_prog.load()?;
-    read_enter_prog.attach("syscalls", "sys_enter_read")?;
-    info!("attached sys_enter_read tracepoint");
-
-    // Load and attach sys_exit_read tracepoint.
-    let read_exit_prog: &mut TracePoint = ebpf
-        .program_mut("sys_exit_read")
-        .context("sys_exit_read program not found")?
-        .try_into()?;
-    read_exit_prog.load()?;
-    read_exit_prog.attach("syscalls", "sys_exit_read")?;
-    info!("attached sys_exit_read tracepoint");
+    attach_tracepoint(&mut ebpf, "sys_enter_execve")?;
+    attach_tracepoint(&mut ebpf, "sys_exit_execve")?;
+    attach_tracepoint(&mut ebpf, "sys_enter_exit_group")?;
+    attach_tracepoint(&mut ebpf, "sys_enter_write")?;
+    attach_tracepoint(&mut ebpf, "sys_enter_read")?;
+    attach_tracepoint(&mut ebpf, "sys_exit_read")?;
 
     // Tell eBPF to skip events from our own process (avoids feedback loops).
     let mut self_tgid_map: aya::maps::Array<_, u32> = aya::maps::Array::try_from(

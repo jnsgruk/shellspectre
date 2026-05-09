@@ -27,8 +27,7 @@ pub fn create_pool(db_path: &str) -> Result<DbPool> {
             "database not found, creating empty database"
         );
         let conn = rusqlite::Connection::open(db_path).context("failed to create database file")?;
-        conn.execute_batch(SCHEMA)
-            .context("failed to initialize database schema")?;
+        init_schema(&conn)?;
     }
 
     let manager = SqliteConnectionManager::file(db_path)
@@ -67,54 +66,20 @@ pub fn create_test_pool() -> Result<DbPool> {
 
     {
         let conn = pool.get().context("failed to get test connection")?;
-        conn.execute_batch(SCHEMA)
-            .context("failed to create test schema")?;
+        init_schema(&conn)?;
     }
 
     Ok(pool)
 }
 
-/// Shspectr database schema — duplicated from `shspectr/src/sqlite_sink.rs`.
-///
-/// We duplicate rather than depend on the shspectr crate because the web
-/// crate must not depend on the eBPF-loading binary crate. Used both for
-/// auto-creating empty databases and for in-memory test databases.
-pub const SCHEMA: &str = r"
-CREATE TABLE IF NOT EXISTS sessions (
-    id          TEXT PRIMARY KEY,
-    started_at  TEXT NOT NULL,
-    ended_at    TEXT,
-    root_pid    INTEGER NOT NULL,
-    root_comm   TEXT,
-    uid         INTEGER NOT NULL,
-    euid        INTEGER NOT NULL,
-    tty_nr      INTEGER,
-    cgroup_id   INTEGER
-);
+/// Additional index needed by the web crate's ppid queries.
+const EXTRA_SCHEMA: &str = "CREATE INDEX IF NOT EXISTS idx_events_ppid ON events(ppid);";
 
-CREATE TABLE IF NOT EXISTS events (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id  TEXT NOT NULL REFERENCES sessions(id),
-    event_type  TEXT NOT NULL,
-    timestamp   TEXT NOT NULL,
-    pid         INTEGER NOT NULL,
-    ppid        INTEGER NOT NULL,
-    uid         INTEGER NOT NULL,
-    gid         INTEGER NOT NULL,
-    euid        INTEGER NOT NULL,
-    comm        TEXT,
-    tty_nr      INTEGER,
-    filename    TEXT,
-    argv        TEXT,
-    fd          INTEGER,
-    data        TEXT,
-    data_len    INTEGER,
-    byte_count  INTEGER,
-    exit_code   INTEGER
-);
-
-CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
-CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
-CREATE INDEX IF NOT EXISTS idx_events_type ON events(session_id, event_type);
-CREATE INDEX IF NOT EXISTS idx_events_ppid ON events(ppid);
-";
+/// Initialize the database schema (base + web-specific indexes).
+fn init_schema(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(shspectr_common::SCHEMA)
+        .context("failed to initialize database schema")?;
+    conn.execute_batch(EXTRA_SCHEMA)
+        .context("failed to create extra indexes")?;
+    Ok(())
+}

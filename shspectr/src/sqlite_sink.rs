@@ -8,46 +8,6 @@ use rusqlite::Connection;
 
 use crate::event::{ParsedExecEvent, ParsedExitEvent, ParsedIoEvent};
 
-/// SQL to create the sessions and events tables.
-const SCHEMA: &str = r"
-CREATE TABLE IF NOT EXISTS sessions (
-    id          TEXT PRIMARY KEY,
-    started_at  TEXT NOT NULL,
-    ended_at    TEXT,
-    root_pid    INTEGER NOT NULL,
-    root_comm   TEXT,
-    uid         INTEGER NOT NULL,
-    euid        INTEGER NOT NULL,
-    tty_nr      INTEGER,
-    cgroup_id   INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS events (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id  TEXT NOT NULL REFERENCES sessions(id),
-    event_type  TEXT NOT NULL,
-    timestamp   TEXT NOT NULL,
-    pid         INTEGER NOT NULL,
-    ppid        INTEGER NOT NULL,
-    uid         INTEGER NOT NULL,
-    gid         INTEGER NOT NULL,
-    euid        INTEGER NOT NULL,
-    comm        TEXT,
-    tty_nr      INTEGER,
-    filename    TEXT,
-    argv        TEXT,
-    fd          INTEGER,
-    data        TEXT,
-    data_len    INTEGER,
-    byte_count  INTEGER,
-    exit_code   INTEGER
-);
-
-CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
-CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
-CREATE INDEX IF NOT EXISTS idx_events_type ON events(session_id, event_type);
-";
-
 /// Info needed to create a session row.
 pub struct SessionInfo<'a> {
     pub session_id: &'a str,
@@ -69,7 +29,8 @@ impl SqliteSink {
     /// the schema.
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path).context("open SQLite database")?;
-        conn.execute_batch(SCHEMA).context("create SQLite schema")?;
+        conn.execute_batch(shspectr_common::SCHEMA)
+            .context("create SQLite schema")?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
             .context("set SQLite pragmas")?;
         Ok(Self { conn })
@@ -79,7 +40,8 @@ impl SqliteSink {
     #[cfg(test)]
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().context("open in-memory SQLite")?;
-        conn.execute_batch(SCHEMA).context("create SQLite schema")?;
+        conn.execute_batch(shspectr_common::SCHEMA)
+            .context("create SQLite schema")?;
         Ok(Self { conn })
     }
 
@@ -87,9 +49,11 @@ impl SqliteSink {
     /// session_id.
     pub fn ensure_session(&self, info: &SessionInfo<'_>) -> Result<()> {
         self.conn
-            .execute(
+            .prepare_cached(
                 "INSERT OR IGNORE INTO sessions (id, started_at, root_pid, root_comm, uid, euid, tty_nr, cgroup_id)
                  VALUES (?1, datetime('now'), ?2, ?3, ?4, ?5, ?6, ?7)",
+            )?
+            .execute(
                 rusqlite::params![info.session_id, info.pid, info.comm, info.uid, info.euid, info.tty_nr, i64::try_from(info.cgroup_id).unwrap_or(i64::MAX)],
             )
             .context("insert session")?;
@@ -100,9 +64,11 @@ impl SqliteSink {
     pub fn insert_exec(&self, session_id: &str, event: &ParsedExecEvent) -> Result<()> {
         let argv_json = serde_json::to_string(&event.argv).unwrap_or_default();
         self.conn
-            .execute(
+            .prepare_cached(
                 "INSERT INTO events (session_id, event_type, timestamp, pid, ppid, uid, gid, euid, comm, tty_nr, filename, argv)
                  VALUES (?1, 'exec', datetime('now'), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            )?
+            .execute(
                 rusqlite::params![
                     session_id,
                     event.pid,
@@ -123,9 +89,11 @@ impl SqliteSink {
     /// Record an exit event and update session ended_at.
     pub fn insert_exit(&self, session_id: &str, event: &ParsedExitEvent) -> Result<()> {
         self.conn
-            .execute(
+            .prepare_cached(
                 "INSERT INTO events (session_id, event_type, timestamp, pid, ppid, uid, gid, euid, comm, tty_nr, exit_code)
                  VALUES (?1, 'exit', datetime('now'), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            )?
+            .execute(
                 rusqlite::params![
                     session_id,
                     event.pid,
@@ -143,23 +111,21 @@ impl SqliteSink {
         // Backfill exit_code onto the most recent exec row for this pid,
         // so the web UI can read it without joining the exit row.
         self.conn
-            .execute(
+            .prepare_cached(
                 "UPDATE events SET exit_code = ?1 \
                  WHERE id = ( \
                      SELECT id FROM events \
                      WHERE session_id = ?2 AND pid = ?3 AND event_type = 'exec' \
                      ORDER BY id DESC LIMIT 1 \
                  )",
-                rusqlite::params![event.exit_code, session_id, event.pid],
-            )
+            )?
+            .execute(rusqlite::params![event.exit_code, session_id, event.pid])
             .context("backfill exit_code onto exec row")?;
 
         // Update session ended_at.
         self.conn
-            .execute(
-                "UPDATE sessions SET ended_at = datetime('now') WHERE id = ?1",
-                rusqlite::params![session_id],
-            )
+            .prepare_cached("UPDATE sessions SET ended_at = datetime('now') WHERE id = ?1")?
+            .execute(rusqlite::params![session_id])
             .context("update session ended_at")?;
         Ok(())
     }
@@ -173,9 +139,11 @@ impl SqliteSink {
     ) -> Result<()> {
         let data_str = String::from_utf8_lossy(&event.data);
         self.conn
-            .execute(
+            .prepare_cached(
                 "INSERT INTO events (session_id, event_type, timestamp, pid, ppid, uid, gid, euid, comm, tty_nr, fd, data, data_len, byte_count)
                  VALUES (?1, ?2, datetime('now'), ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            )?
+            .execute(
                 rusqlite::params![
                     session_id,
                     event_type,

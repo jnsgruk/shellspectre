@@ -11,4 +11,4 @@ default = []
 std = ["serde"]
 
 [dependencies]
-serde = { version = "1", default-features = false, features = ["derive"], optional = true }
+serde = { workspace = true, default-features = false, optional = true }

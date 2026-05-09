@@ -7,7 +7,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Router, routing::get};
 
 use crate::application::state::AppState;
-use crate::domain::event::EventFilter;
+use crate::domain::filter::EventFilter;
 use crate::domain::listing::ListRequest;
 use crate::presentation::web::listing::{ListNavigator, Paginated};
 use shspectr_common::FilterKeywordMeta;

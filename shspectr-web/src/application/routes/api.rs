@@ -13,7 +13,7 @@ use futures::StreamExt;
 use serde::Deserialize;
 
 use crate::application::state::AppState;
-use crate::domain::event::EventFilter;
+use crate::domain::filter::EventFilter;
 use crate::domain::listing::{EventSortKey, ListRequest, Page, SortDirection};
 use crate::presentation::web::event::{EventDetailView, EventSummaryView};
 use crate::presentation::web::listing::{ListNavigator, Paginated};

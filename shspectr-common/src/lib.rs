@@ -69,11 +69,16 @@ pub mod offset_idx {
 }
 
 /// Discriminant for the type of event captured.
+///
+/// Note: variant 1 was removed (formerly `IO_ENTER`). The gap is intentional
+/// to preserve backwards compatibility with persisted event data.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "std", derive(serde::Serialize, serde::Deserialize))]
 pub enum EventType {
     Exec = 0,
+    // Variant 1 (formerly IO_ENTER) is reserved — do not reuse.
+    /// A read syscall I/O event.
     Read = 2,
     Write = 3,
     Exit = 4,
@@ -96,7 +101,7 @@ pub struct EventHeader {
     pub euid: u32,
     pub comm: [u8; COMM_LEN],
     pub tty_nr: u32,
-    _pad1: u32,
+    _pad1: [u32; 2],
     pub cgroup_id: u64,
 }
 
@@ -130,7 +135,7 @@ impl EventHeader {
             euid,
             comm,
             tty_nr,
-            _pad1: 0,
+            _pad1: [0; 2],
             cgroup_id,
         }
     }
@@ -174,6 +179,20 @@ pub struct IoEvent {
     pub data: [u8; MAX_DATA_LEN],
 }
 
+impl IoEvent {
+    /// Create a zeroed I/O event. Useful for test construction and
+    /// scratch buffer initialization.
+    pub const fn zeroed(header: EventHeader) -> Self {
+        Self {
+            header,
+            fd: 0,
+            data_len: 0,
+            count: 0,
+            data: [0u8; MAX_DATA_LEN],
+        }
+    }
+}
+
 /// Exit event payload — captures process exit code.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -181,7 +200,37 @@ pub struct IoEvent {
 pub struct ExitEvent {
     pub header: EventHeader,
     pub exit_code: i32,
+    _pad: u32,
 }
+
+impl ExitEvent {
+    /// Create an exit event with padding zeroed.
+    pub const fn new(header: EventHeader, exit_code: i32) -> Self {
+        Self {
+            header,
+            exit_code,
+            _pad: 0,
+        }
+    }
+}
+
+// Compile-time size assertions for critical structs.
+const _: () = assert!(
+    core::mem::size_of::<EventHeader>() == 80,
+    "EventHeader size changed — update eBPF offsets"
+);
+const _: () = assert!(
+    core::mem::size_of::<ExecEvent>() == 80 + MAX_FILENAME_LEN + MAX_ARGV_COUNT * MAX_ARG_LEN + 16,
+    "ExecEvent size changed — update eBPF offsets"
+);
+const _: () = assert!(
+    core::mem::size_of::<IoEvent>() == 80 + 16 + MAX_DATA_LEN,
+    "IoEvent size changed — update eBPF offsets"
+);
+const _: () = assert!(
+    core::mem::size_of::<ExitEvent>() == 88,
+    "ExitEvent size changed — update eBPF offsets"
+);
 
 #[cfg(test)]
 mod tests {
@@ -273,9 +322,132 @@ mod tests {
         assert_eq!(arr[offset_idx::SIGNAL_TTY as usize], 60);
         assert_eq!(arr[offset_idx::TTY_INDEX as usize], 70);
     }
+
+    #[test]
+    fn event_type_discriminants() {
+        assert_eq!(EventType::Exec as u32, 0);
+        assert_eq!(EventType::Read as u32, 2);
+        assert_eq!(EventType::Write as u32, 3);
+        assert_eq!(EventType::Exit as u32, 4);
+    }
+
+    #[test]
+    fn exec_event_size() {
+        assert_eq!(
+            mem::size_of::<ExecEvent>(),
+            80 + MAX_FILENAME_LEN + MAX_ARGV_COUNT * MAX_ARG_LEN + 16,
+        );
+    }
+
+    #[test]
+    fn exit_event_offsets() {
+        assert_eq!(mem::offset_of!(ExitEvent, exit_code), 80, "exit_code");
+        assert_eq!(mem::size_of::<ExitEvent>(), 88, "ExitEvent size");
+    }
+
+    #[test]
+    fn io_event_offsets() {
+        assert_eq!(mem::offset_of!(IoEvent, fd), 80, "fd");
+        assert_eq!(mem::offset_of!(IoEvent, data_len), 84, "data_len");
+        assert_eq!(mem::offset_of!(IoEvent, count), 88, "count");
+        assert_eq!(mem::offset_of!(IoEvent, data), 96, "data");
+    }
+
+    #[test]
+    fn task_field_offsets_size() {
+        assert_eq!(mem::size_of::<TaskFieldOffsets>(), 56);
+    }
+
+    #[test]
+    fn exec_event_zeroed_fields() {
+        let header = EventHeader::new(
+            EventType::Exec,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            [0u8; COMM_LEN],
+            0,
+            0,
+        );
+        let evt = ExecEvent::zeroed(header);
+        assert_eq!(evt.argc, 0);
+        assert_eq!(evt.retval, 0);
+        assert_eq!(evt.filename, [0u8; MAX_FILENAME_LEN]);
+    }
+
+    #[test]
+    fn io_event_zeroed_fields() {
+        let header = EventHeader::new(
+            EventType::Read,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            [0u8; COMM_LEN],
+            0,
+            0,
+        );
+        let evt = IoEvent::zeroed(header);
+        assert_eq!(evt.fd, 0);
+        assert_eq!(evt.data_len, 0);
+        assert_eq!(evt.count, 0);
+        assert_eq!(evt.data, [0u8; MAX_DATA_LEN]);
+    }
 }
 
+/// SQL schema for the sessions and events tables. Shared between the
+/// CLI writer (`shspectr`) and the web reader (`shspectr-web`).
+#[cfg(feature = "std")]
+pub const SCHEMA: &str = r"
+CREATE TABLE IF NOT EXISTS sessions (
+    id          TEXT PRIMARY KEY,
+    started_at  TEXT NOT NULL,
+    ended_at    TEXT,
+    root_pid    INTEGER NOT NULL,
+    root_comm   TEXT,
+    uid         INTEGER NOT NULL,
+    euid        INTEGER NOT NULL,
+    tty_nr      INTEGER,
+    cgroup_id   INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  TEXT NOT NULL REFERENCES sessions(id),
+    event_type  TEXT NOT NULL,
+    timestamp   TEXT NOT NULL,
+    pid         INTEGER NOT NULL,
+    ppid        INTEGER NOT NULL,
+    uid         INTEGER NOT NULL,
+    gid         INTEGER NOT NULL,
+    euid        INTEGER NOT NULL,
+    comm        TEXT,
+    tty_nr      INTEGER,
+    filename    TEXT,
+    argv        TEXT,
+    fd          INTEGER,
+    data        TEXT,
+    data_len    INTEGER,
+    byte_count  INTEGER,
+    exit_code   INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
+CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
+CREATE INDEX IF NOT EXISTS idx_events_type ON events(session_id, event_type);
+";
+
 /// Metadata for a filter keyword, used for autocompletion and help.
+#[cfg(feature = "std")]
 #[derive(Debug, Clone, Copy)]
 pub struct FilterKeywordMeta {
     /// The keyword name (e.g. "pid", "ppid").
@@ -291,6 +463,7 @@ pub struct FilterKeywordMeta {
 }
 
 /// All supported filter keywords.
+#[cfg(feature = "std")]
 pub const FILTER_KEYWORDS: &[FilterKeywordMeta] = &[
     FilterKeywordMeta {
         keyword: "pid",

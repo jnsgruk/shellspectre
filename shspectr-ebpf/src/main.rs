@@ -37,12 +37,6 @@ static EXEC_SCRATCH: aya_ebpf::maps::PerCpuArray<ExecEvent> =
 #[map]
 static OFFSETS: Array<u64> = Array::with_max_entries(offset_idx::COUNT, 0);
 
-/// Per-CPU scratch space for building an [`IoEvent`] without
-/// exceeding the 512-byte BPF stack limit.
-#[map]
-static IO_SCRATCH: aya_ebpf::maps::PerCpuArray<IoEvent> =
-    aya_ebpf::maps::PerCpuArray::with_max_entries(1, 0);
-
 /// Info stashed on sys_enter_read, consumed on sys_exit_read.
 /// Keyed by pid_tgid.
 #[repr(C)]
@@ -67,10 +61,16 @@ static EXEC_PIDS: HashMap<u32, u8> = HashMap::with_max_entries(4096, 0);
 #[map]
 static SELF_TGID: Array<u32> = Array::with_max_entries(1, 0);
 
-/// Returns true if the current task is the shspectr process itself.
-fn is_self() -> bool {
-    let tgid = (bpf_get_current_pid_tgid() >> 32) as u32;
-    SELF_TGID.get(0).copied() == Some(tgid)
+/// Returns `Some(pid_tgid)` if the current task is NOT the shspectr process,
+/// or `None` if it is (meaning the caller should skip processing).
+fn check_not_self() -> Option<u64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let tgid = (pid_tgid >> 32) as u32;
+    if SELF_TGID.get(0).copied() == Some(tgid) {
+        None
+    } else {
+        Some(pid_tgid)
+    }
 }
 
 /// Read a u64 offset value from the OFFSETS map.
@@ -103,9 +103,11 @@ unsafe fn read_u32(base: u64, offset: u64) -> Result<u32, i64> {
 }
 
 /// Populate common event header fields from current task context.
+///
+/// Accepts `pid_tgid` to avoid a redundant `bpf_get_current_pid_tgid()` call
+/// when the caller has already obtained it (e.g. via [`check_not_self`]).
 #[allow(clippy::similar_names)]
-fn fill_header(event_type: EventType) -> EventHeader {
-    let pid_tgid = bpf_get_current_pid_tgid();
+fn fill_header(event_type: EventType, pid_tgid: u64) -> EventHeader {
     let uid_gid = bpf_get_current_uid_gid();
     let pid = (pid_tgid >> 32) as u32;
 
@@ -174,6 +176,28 @@ fn read_tty_nr(task: u64) -> u32 {
     }
 }
 
+/// Read user-space I/O data into an [`IoEvent`]'s data buffer.
+///
+/// # Safety
+///
+/// `event` must point to a valid, writable `IoEvent`. `buf_ptr` must be a
+/// valid user-space pointer with at least `byte_count` readable bytes.
+#[allow(clippy::inline_always)]
+#[inline(always)] // required: BPF verifier rejects non-inlined helpers in some contexts
+unsafe fn fill_io_data(event: *mut IoEvent, buf_ptr: *const u8, byte_count: u64) {
+    let to_read = if byte_count < MAX_DATA_LEN as u64 {
+        byte_count as usize
+    } else {
+        MAX_DATA_LEN
+    };
+    // SAFETY: event points to valid writable memory; buf_ptr is a valid user-space pointer.
+    unsafe {
+        let data = &raw mut (*event).data;
+        let _ = aya_ebpf::helpers::bpf_probe_read_user_buf(buf_ptr, &mut (&mut (*data))[..to_read]);
+        core::ptr::write(&raw mut (*event).data_len, to_read as u32);
+    }
+}
+
 #[tracepoint]
 pub fn sys_enter_execve(ctx: TracePointContext) -> u32 {
     match try_sys_enter_execve(&ctx) {
@@ -184,10 +208,9 @@ pub fn sys_enter_execve(ctx: TracePointContext) -> u32 {
 
 #[allow(clippy::similar_names)]
 fn try_sys_enter_execve(ctx: &TracePointContext) -> Result<(), i64> {
-    if is_self() {
+    let Some(pid_tgid) = check_not_self() else {
         return Ok(());
-    }
-    let pid_tgid = bpf_get_current_pid_tgid();
+    };
 
     // ExecEvent is ~5.5KB — too large for the 512-byte BPF stack.
     // Use a per-CPU array as scratch space to build the event.
@@ -198,7 +221,7 @@ fn try_sys_enter_execve(ctx: &TracePointContext) -> Result<(), i64> {
     // SAFETY: scratch points to per-CPU array entry; we write each field
     // individually to stay within BPF stack limits.
     unsafe {
-        let hdr = fill_header(EventType::Exec);
+        let hdr = fill_header(EventType::Exec, pid_tgid);
         core::ptr::write(&raw mut (*scratch).header, hdr);
         core::ptr::write(&raw mut (*scratch).retval, 0);
 
@@ -294,19 +317,20 @@ pub fn sys_enter_exit_group(ctx: TracePointContext) -> u32 {
 }
 
 fn try_sys_enter_exit_group(ctx: &TracePointContext) -> Result<(), i64> {
-    if is_self() {
+    let Some(pid_tgid) = check_not_self() else {
         return Ok(());
-    }
+    };
     // SAFETY: error_code is at offset 16 in sys_enter_exit_group tracepoint args.
     let error_code: i64 = unsafe { ctx.read_at(16).map_err(|_| 1i64)? };
 
-    let header = fill_header(EventType::Exit);
+    let header = fill_header(EventType::Exit, pid_tgid);
 
     let mut entry = EVENTS.reserve::<ExitEvent>(0).ok_or(1i64)?;
     let event = entry.as_mut_ptr();
 
     // SAFETY: event points to reserved ringbuf memory with ExitEvent layout.
     unsafe {
+        core::ptr::write_bytes(event, 0u8, 1);
         core::ptr::write(&raw mut (*event).header, header);
         core::ptr::write(&raw mut (*event).exit_code, error_code as i32);
     }
@@ -314,7 +338,7 @@ fn try_sys_enter_exit_group(ctx: &TracePointContext) -> Result<(), i64> {
     entry.submit(0);
 
     // Clean up the exec'd PID tracker.
-    let tgid = (bpf_get_current_pid_tgid() >> 32) as u32;
+    let tgid = (pid_tgid >> 32) as u32;
     let _ = EXEC_PIDS.remove(&tgid);
 
     Ok(())
@@ -329,9 +353,9 @@ pub fn sys_enter_write(ctx: TracePointContext) -> u32 {
 }
 
 fn try_sys_enter_write(ctx: &TracePointContext) -> Result<(), i64> {
-    if is_self() {
+    let Some(pid_tgid) = check_not_self() else {
         return Ok(());
-    }
+    };
     // SAFETY: fd is at offset 16 in sys_enter_write tracepoint args.
     let fd: u64 = unsafe { ctx.read_at(16).map_err(|_| 1i64)? };
     let fd = fd as u32;
@@ -342,7 +366,7 @@ fn try_sys_enter_write(ctx: &TracePointContext) -> Result<(), i64> {
     }
 
     // Only capture I/O from processes we've seen exec.
-    let tgid = (bpf_get_current_pid_tgid() >> 32) as u32;
+    let tgid = (pid_tgid >> 32) as u32;
     // SAFETY: EXEC_PIDS is a valid BPF hash map.
     if unsafe { EXEC_PIDS.get(&tgid) }.is_none() {
         return Ok(());
@@ -353,36 +377,17 @@ fn try_sys_enter_write(ctx: &TracePointContext) -> Result<(), i64> {
     // SAFETY: count at offset 32 in sys_enter_write tracepoint args.
     let count: u64 = unsafe { ctx.read_at(32).map_err(|_| 1i64)? };
 
-    let Some(scratch) = IO_SCRATCH.get_ptr_mut(0) else {
-        return Err(1);
-    };
-
-    // SAFETY: scratch points to per-CPU array entry.
-    unsafe {
-        let hdr = fill_header(EventType::Write);
-        core::ptr::write(&raw mut (*scratch).header, hdr);
-        core::ptr::write(&raw mut (*scratch).fd, fd);
-        core::ptr::write(&raw mut (*scratch).count, count);
-
-        let data = &raw mut (*scratch).data;
-        (*data).fill(0);
-
-        let to_read = if count < MAX_DATA_LEN as u64 {
-            count as usize
-        } else {
-            MAX_DATA_LEN
-        };
-        let _ = aya_ebpf::helpers::bpf_probe_read_user_buf(buf_ptr, &mut (&mut (*data))[..to_read]);
-        core::ptr::write(&raw mut (*scratch).data_len, to_read as u32);
-    }
-
-    // Submit directly to ring buffer.
+    // Reserve ring buffer space and write event in-place.
     let mut entry = EVENTS.reserve::<IoEvent>(0).ok_or(1i64)?;
     let event = entry.as_mut_ptr();
 
-    // SAFETY: scratch and event point to valid memory.
+    // SAFETY: event points to reserved ringbuf memory with IoEvent layout.
     unsafe {
-        core::ptr::copy_nonoverlapping(&raw const *scratch, event, 1);
+        let hdr = fill_header(EventType::Write, pid_tgid);
+        core::ptr::write(&raw mut (*event).header, hdr);
+        core::ptr::write(&raw mut (*event).fd, fd);
+        core::ptr::write(&raw mut (*event).count, count);
+        fill_io_data(event, buf_ptr, count);
     }
 
     entry.submit(0);
@@ -399,9 +404,9 @@ pub fn sys_enter_read(ctx: TracePointContext) -> u32 {
 }
 
 fn try_sys_enter_read(ctx: &TracePointContext) -> Result<(), i64> {
-    if is_self() {
+    let Some(pid_tgid) = check_not_self() else {
         return Ok(());
-    }
+    };
     // SAFETY: fd at offset 16, buf at offset 24, count at offset 32.
     let fd: u64 = unsafe { ctx.read_at(16).map_err(|_| 1i64)? };
     let fd = fd as u32;
@@ -412,7 +417,7 @@ fn try_sys_enter_read(ctx: &TracePointContext) -> Result<(), i64> {
     }
 
     // Only capture I/O from processes we've seen exec.
-    let tgid = (bpf_get_current_pid_tgid() >> 32) as u32;
+    let tgid = (pid_tgid >> 32) as u32;
     // SAFETY: EXEC_PIDS is a valid BPF hash map.
     if unsafe { EXEC_PIDS.get(&tgid) }.is_none() {
         return Ok(());
@@ -423,7 +428,6 @@ fn try_sys_enter_read(ctx: &TracePointContext) -> Result<(), i64> {
     // SAFETY: count at offset 32 in sys_enter_read tracepoint args.
     let count: u64 = unsafe { ctx.read_at(32).map_err(|_| 1i64)? };
 
-    let pid_tgid = bpf_get_current_pid_tgid();
     let pending = PendingRead {
         fd,
         _pad: 0,
@@ -464,37 +468,19 @@ fn try_sys_exit_read(ctx: &TracePointContext) -> Result<(), i64> {
     let bytes_read = ret as u64;
     let buf_ptr = pending.buf_ptr as *const u8;
     let count = pending.count;
+    let fd = pending.fd;
 
-    let Some(scratch) = IO_SCRATCH.get_ptr_mut(0) else {
-        let _ = PENDING_READ.remove(&pid_tgid);
-        return Err(1);
-    };
-
-    // SAFETY: scratch points to per-CPU array entry.
-    unsafe {
-        let hdr = fill_header(EventType::Read);
-        core::ptr::write(&raw mut (*scratch).header, hdr);
-        core::ptr::write(&raw mut (*scratch).fd, pending.fd);
-        core::ptr::write(&raw mut (*scratch).count, count);
-
-        let data = &raw mut (*scratch).data;
-        (*data).fill(0);
-
-        let to_read = if bytes_read < MAX_DATA_LEN as u64 {
-            bytes_read as usize
-        } else {
-            MAX_DATA_LEN
-        };
-        let _ = aya_ebpf::helpers::bpf_probe_read_user_buf(buf_ptr, &mut (&mut (*data))[..to_read]);
-        core::ptr::write(&raw mut (*scratch).data_len, to_read as u32);
-    }
-
+    // Reserve ring buffer space and write event in-place.
     let mut entry = EVENTS.reserve::<IoEvent>(0).ok_or(1i64)?;
     let event = entry.as_mut_ptr();
 
-    // SAFETY: scratch and event point to valid memory.
+    // SAFETY: event points to reserved ringbuf memory with IoEvent layout.
     unsafe {
-        core::ptr::copy_nonoverlapping(&raw const *scratch, event, 1);
+        let hdr = fill_header(EventType::Read, pid_tgid);
+        core::ptr::write(&raw mut (*event).header, hdr);
+        core::ptr::write(&raw mut (*event).fd, fd);
+        core::ptr::write(&raw mut (*event).count, count);
+        fill_io_data(event, buf_ptr, bytes_read);
     }
 
     entry.submit(0);

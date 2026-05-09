@@ -1,6 +1,6 @@
 //! Pagination and navigation view models.
 
-use crate::domain::event::EventFilter;
+use crate::domain::filter::EventFilter;
 use crate::domain::listing::{EventSortKey, Page, SortDirection};
 use crate::presentation::web::event::EventSummaryView;
 

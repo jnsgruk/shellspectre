@@ -3,7 +3,8 @@
 use anyhow::{Context, Result};
 use rusqlite::{OptionalExtension, params};
 
-use crate::domain::event::{EventDetail, EventFilter, EventSummary, FilterValue, IoChunk};
+use crate::domain::event::{EventDetail, EventSummary, IoChunk};
+use crate::domain::filter::{EventFilter, FilterValue};
 use crate::domain::listing::{ListRequest, Page};
 use crate::domain::repositories::EventRepository;
 use crate::infrastructure::database::DbPool;

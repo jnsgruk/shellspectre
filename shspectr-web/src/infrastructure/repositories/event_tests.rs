@@ -5,7 +5,7 @@ use super::*;
 use anyhow::Result;
 use rusqlite::params;
 
-use crate::domain::event::EventFilter;
+use crate::domain::filter::EventFilter;
 use crate::domain::listing::ListRequest;
 use crate::infrastructure::database::create_test_pool;
 

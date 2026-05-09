@@ -2,7 +2,8 @@
 
 use anyhow::Result;
 
-use super::event::{EventDetail, EventFilter, EventSummary};
+use super::event::{EventDetail, EventSummary};
+use super::filter::EventFilter;
 use super::listing::{ListRequest, Page};
 
 /// Read-only repository for querying events.
