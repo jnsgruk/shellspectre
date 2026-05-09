@@ -1,7 +1,7 @@
 //! API route handlers.
 
 use askama::Template;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Router, routing::get};
@@ -10,6 +10,7 @@ use serde::Deserialize;
 use crate::application::state::AppState;
 use crate::domain::event::EventFilter;
 use crate::domain::listing::{EventSortKey, ListRequest, SortDirection};
+use crate::presentation::web::event::EventDetailView;
 use crate::presentation::web::listing::{ListNavigator, Paginated};
 
 use super::support::is_datastar_request;
@@ -110,5 +111,55 @@ async fn list_events(
 }
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/api/v1/events", get(list_events))
+    Router::new()
+        .route("/api/v1/events", get(list_events))
+        .route("/api/v1/events/{id}/detail", get(get_event_detail))
+}
+
+/// Askama template for the event detail fragment.
+#[derive(Template)]
+#[template(path = "partials/event_detail.html")]
+struct EventDetailFragment {
+    detail: EventDetailView,
+}
+
+/// `GET /api/v1/events/{id}/detail`
+///
+/// Returns an HTML fragment for the detail expansion panel.
+/// If the event is not found, returns 404.
+async fn get_event_detail(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Response {
+    let detail = match state.repo.get_detail(id) {
+        Ok(Some(detail)) => detail,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                "<tr><td colspan=\"5\" class=\"px-3 py-4 text-center text-red-400\">Event not found.</td></tr>",
+            )
+                .into_response();
+        }
+        Err(err) => {
+            tracing::error!(%err, id, "failed to get event detail");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let view = EventDetailView::from_detail(&detail);
+    let template = EventDetailFragment { detail: view };
+
+    match template.render() {
+        Ok(html) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            html,
+        )
+            .into_response(),
+        Err(err) => {
+            tracing::error!(%err, "failed to render event detail fragment");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }

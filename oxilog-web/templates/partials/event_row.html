@@ -1,8 +1,17 @@
-<tr id="ev-{{ event.id }}" class="border-b border-gray-800 hover:bg-gray-900/50 cursor-pointer">
+<tr id="ev-{{ event.id }}" class="border-b border-gray-800 hover:bg-gray-900/50">
     <td class="px-3 py-2 text-sm font-mono text-gray-300 whitespace-nowrap">
         <button
             class="mr-1 text-gray-500 hover:text-gray-300 focus:outline-none"
-            data-on-click="@get('/api/v1/events/{{ event.id }}/detail')"
+            data-on-click="
+                const detail = document.getElementById('detail-{{ event.id }}');
+                if (detail.classList.contains('hidden')) {
+                    @get('/api/v1/events/{{ event.id }}/detail');
+                    detail.classList.remove('hidden');
+                } else {
+                    detail.innerHTML = '<td colspan=\'5\'></td>';
+                    detail.classList.add('hidden');
+                }
+            "
             aria-label="Toggle detail for event {{ event.id }}"
         >▶</button>
         {{ event.timestamp }}

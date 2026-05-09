@@ -1,0 +1,77 @@
+<tr id="detail-{{ detail.id }}" class="bg-gray-900/30">
+    <td colspan="5" class="px-3 py-4">
+        <div class="border border-gray-700 rounded-lg p-4 ml-6">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="text-sm font-semibold text-gray-300">Details</h3>
+                <button
+                    class="text-xs text-gray-500 hover:text-gray-300"
+                    data-on-click="document.getElementById('detail-{{ detail.id }}').innerHTML = '<td colspan=\'5\'></td>'; document.getElementById('detail-{{ detail.id }}').classList.add('hidden')"
+                >✕ Close</button>
+            </div>
+
+            <!-- Metadata Grid -->
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-2 text-sm mb-4">
+                <div>
+                    <span class="text-gray-500">Session:</span>
+                    <span class="text-gray-300 font-mono ml-1">{{ detail.session_id }}</span>
+                </div>
+                <div>
+                    <span class="text-gray-500">PID:</span>
+                    <span class="text-gray-300 font-mono ml-1">{{ detail.pid }}</span>
+                </div>
+                <div>
+                    <span class="text-gray-500">PPID:</span>
+                    <span class="text-gray-300 font-mono ml-1">{{ detail.ppid }}</span>
+                </div>
+                <div>
+                    <span class="text-gray-500">UID:</span>
+                    <span class="text-gray-300 font-mono ml-1">{{ detail.uid }}</span>
+                </div>
+                <div>
+                    <span class="text-gray-500">EUID:</span>
+                    <span class="text-gray-300 font-mono ml-1">{{ detail.euid }}</span>
+                </div>
+                <div>
+                    <span class="text-gray-500">GID:</span>
+                    <span class="text-gray-300 font-mono ml-1">{{ detail.gid }}</span>
+                </div>
+                <div>
+                    <span class="text-gray-500">TTY:</span>
+                    <span class="text-gray-300 font-mono ml-1">{{ detail.tty }}</span>
+                </div>
+                <div>
+                    <span class="text-gray-500">Exit:</span>
+                    <span class="text-gray-300 font-mono ml-1">{{ detail.exit_code }}</span>
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <span class="text-gray-500 text-sm">Full command:</span>
+                <code class="block mt-1 px-3 py-2 bg-gray-950 rounded text-sm text-gray-200 font-mono">{{ detail.full_command }}</code>
+            </div>
+
+            <!-- I/O Blocks -->
+            {% if detail.has_stdin %}
+            <div class="mb-3">
+                <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">
+                    stdin ({{ detail.stdin_bytes }} bytes)
+                </div>
+                <pre class="px-3 py-2 bg-gray-950 rounded text-sm text-gray-300 font-mono overflow-x-auto max-h-48 overflow-y-auto">{{ detail.stdin_data }}</pre>
+            </div>
+            {% endif %}
+
+            {% if detail.has_stdout %}
+            <div class="mb-3">
+                <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">
+                    stdout/stderr ({{ detail.stdout_bytes }} bytes)
+                </div>
+                <pre class="px-3 py-2 bg-gray-950 rounded text-sm text-gray-300 font-mono overflow-x-auto max-h-48 overflow-y-auto">{{ detail.stdout_data }}</pre>
+            </div>
+            {% endif %}
+
+            {% if !detail.has_stdin && !detail.has_stdout %}
+            <div class="text-sm text-gray-500 italic">No I/O data captured.</div>
+            {% endif %}
+        </div>
+    </td>
+</tr>

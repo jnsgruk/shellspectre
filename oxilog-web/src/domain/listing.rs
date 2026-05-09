@@ -34,7 +34,7 @@ impl SortDirection {
 
 /// Columns that events can be sorted by.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum EventSortKey {
     /// Sort by timestamp.
     #[default]
