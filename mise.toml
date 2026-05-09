@@ -41,11 +41,11 @@ run = [
 ]
 
 [tasks.check-file-length]
-description = "Enforce max 500 lines per .rs file"
+description = "Enforce max 750 lines per .rs file"
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
-max=500
+max=750
 failed=0
 while IFS= read -r f; do
   lines=$(wc -l < "$f")

@@ -4,7 +4,7 @@
 //! structured data, with no I/O side effects. This makes them straightforward
 //! to unit test with synthetic data.
 
-use oxilog_common::{EventHeader, ExecEvent, MAX_ARGV_COUNT};
+use oxilog_common::{EventHeader, ExecEvent, ExitEvent, IoEvent, MAX_ARGV_COUNT};
 
 /// A parsed exec event with owned string fields, ready for logging or
 /// serialization.
@@ -66,6 +66,92 @@ pub fn parse_header(data: &[u8]) -> Option<EventHeader> {
 
     // SAFETY: EventHeader is repr(C), we verified the length.
     Some(unsafe { core::ptr::read_unaligned(data.as_ptr().cast::<EventHeader>()) })
+}
+
+/// A parsed exit event with fields ready for logging or serialization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedExitEvent {
+    pub pid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub euid: u32,
+    pub comm: String,
+    pub tty_nr: u32,
+    pub cgroup_id: u64,
+    pub exit_code: i32,
+}
+
+/// Parse a raw exit event from ring buffer bytes.
+///
+/// Returns `None` if the buffer is too short.
+pub fn parse_exit_event(data: &[u8]) -> Option<ParsedExitEvent> {
+    if data.len() < core::mem::size_of::<ExitEvent>() {
+        return None;
+    }
+
+    // SAFETY: ExitEvent is repr(C), we verified the length, and use
+    // read_unaligned because ring buffer data may not be aligned.
+    let event = unsafe { core::ptr::read_unaligned(data.as_ptr().cast::<ExitEvent>()) };
+    let header = &event.header;
+
+    Some(ParsedExitEvent {
+        pid: header.pid,
+        ppid: header.ppid,
+        uid: header.uid,
+        gid: header.gid,
+        euid: header.euid,
+        comm: cstr_from_bytes(&header.comm),
+        tty_nr: header.tty_nr,
+        cgroup_id: header.cgroup_id,
+        exit_code: event.exit_code,
+    })
+}
+
+/// A parsed I/O event with fields ready for logging or serialization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedIoEvent {
+    pub pid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub euid: u32,
+    pub comm: String,
+    pub tty_nr: u32,
+    pub cgroup_id: u64,
+    pub fd: u32,
+    pub data: Vec<u8>,
+    pub count: u64,
+}
+
+/// Parse a raw I/O event from ring buffer bytes.
+///
+/// Returns `None` if the buffer is too short.
+pub fn parse_io_event(data: &[u8]) -> Option<ParsedIoEvent> {
+    if data.len() < core::mem::size_of::<IoEvent>() {
+        return None;
+    }
+
+    // SAFETY: IoEvent is repr(C), we verified the length, and use
+    // read_unaligned because ring buffer data may not be aligned.
+    let event = unsafe { core::ptr::read_unaligned(data.as_ptr().cast::<IoEvent>()) };
+    let header = &event.header;
+
+    let data_len = (event.data_len as usize).min(oxilog_common::MAX_DATA_LEN);
+
+    Some(ParsedIoEvent {
+        pid: header.pid,
+        ppid: header.ppid,
+        uid: header.uid,
+        gid: header.gid,
+        euid: header.euid,
+        comm: cstr_from_bytes(&header.comm),
+        tty_nr: header.tty_nr,
+        cgroup_id: header.cgroup_id,
+        fd: event.fd,
+        data: event.data[..data_len].to_vec(),
+        count: event.count,
+    })
 }
 
 /// Extract a UTF-8 string from a null-terminated byte buffer.
@@ -187,5 +273,133 @@ mod tests {
         let data = make_exec_event("/bin/true", &[], 0);
         let parsed = parse_exec_event(&data).expect("should parse");
         assert!(parsed.argv.is_empty());
+    }
+
+    fn make_exit_event(exit_code: i32) -> Vec<u8> {
+        let header = EventHeader::new(
+            EventType::Exit,
+            99999,
+            200,
+            1,
+            200,
+            200,
+            1000,
+            1000,
+            0,
+            *b"bash\0\0\0\0\0\0\0\0\0\0\0\0",
+            7,
+            42,
+        );
+        let event = oxilog_common::ExitEvent { header, exit_code };
+
+        let ptr = &event as *const oxilog_common::ExitEvent as *const u8;
+        unsafe {
+            core::slice::from_raw_parts(ptr, core::mem::size_of::<oxilog_common::ExitEvent>())
+        }
+        .to_vec()
+    }
+
+    #[test]
+    fn parse_exit_event_success() {
+        let data = make_exit_event(0);
+        let parsed = parse_exit_event(&data).expect("should parse");
+
+        assert_eq!(parsed.pid, 200);
+        assert_eq!(parsed.ppid, 1);
+        assert_eq!(parsed.exit_code, 0);
+        assert_eq!(parsed.comm, "bash");
+        assert_eq!(parsed.tty_nr, 7);
+        assert_eq!(parsed.cgroup_id, 42);
+    }
+
+    #[test]
+    fn parse_exit_event_nonzero_code() {
+        let data = make_exit_event(1);
+        let parsed = parse_exit_event(&data).expect("should parse");
+        assert_eq!(parsed.exit_code, 1);
+    }
+
+    #[test]
+    fn parse_exit_event_signal_death() {
+        // Process killed by signal 9 → exit code 137 (128 + 9)
+        let data = make_exit_event(137);
+        let parsed = parse_exit_event(&data).expect("should parse");
+        assert_eq!(parsed.exit_code, 137);
+    }
+
+    #[test]
+    fn parse_exit_event_too_short() {
+        let data = vec![0u8; 10];
+        assert!(parse_exit_event(&data).is_none());
+    }
+
+    fn make_io_event(fd: u32, payload: &[u8], count: u64) -> Vec<u8> {
+        let header = EventHeader::new(
+            if fd == 0 {
+                EventType::Read
+            } else {
+                EventType::Write
+            },
+            55555,
+            300,
+            1,
+            300,
+            300,
+            1000,
+            1000,
+            0,
+            *b"cat\0\0\0\0\0\0\0\0\0\0\0\0\0",
+            7,
+            42,
+        );
+        let mut event = oxilog_common::IoEvent {
+            header,
+            fd,
+            data_len: payload.len() as u32,
+            count,
+            data: [0u8; oxilog_common::MAX_DATA_LEN],
+        };
+        event.data[..payload.len()].copy_from_slice(payload);
+
+        let ptr = &event as *const oxilog_common::IoEvent as *const u8;
+        unsafe { core::slice::from_raw_parts(ptr, core::mem::size_of::<oxilog_common::IoEvent>()) }
+            .to_vec()
+    }
+
+    #[test]
+    fn parse_io_event_write_stdout() {
+        let data = make_io_event(1, b"hello world\n", 12);
+        let parsed = parse_io_event(&data).expect("should parse");
+
+        assert_eq!(parsed.pid, 300);
+        assert_eq!(parsed.fd, 1);
+        assert_eq!(parsed.data, b"hello world\n");
+        assert_eq!(parsed.count, 12);
+        assert_eq!(parsed.comm, "cat");
+    }
+
+    #[test]
+    fn parse_io_event_read_stdin() {
+        let data = make_io_event(0, b"input\n", 6);
+        let parsed = parse_io_event(&data).expect("should parse");
+
+        assert_eq!(parsed.fd, 0);
+        assert_eq!(parsed.data, b"input\n");
+        assert_eq!(parsed.count, 6);
+    }
+
+    #[test]
+    fn parse_io_event_empty_data() {
+        let data = make_io_event(2, b"", 0);
+        let parsed = parse_io_event(&data).expect("should parse");
+
+        assert_eq!(parsed.fd, 2);
+        assert!(parsed.data.is_empty());
+    }
+
+    #[test]
+    fn parse_io_event_too_short() {
+        let data = vec![0u8; 10];
+        assert!(parse_io_event(&data).is_none());
     }
 }

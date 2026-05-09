@@ -75,6 +75,49 @@ fn run(filter_pty: bool) -> Result<()> {
     exit_prog.attach("syscalls", "sys_exit_execve")?;
     info!("attached sys_exit_execve tracepoint");
 
+    // Load and attach sys_enter_exit_group tracepoint.
+    let exit_group_prog: &mut TracePoint = ebpf
+        .program_mut("sys_enter_exit_group")
+        .context("sys_enter_exit_group program not found")?
+        .try_into()?;
+    exit_group_prog.load()?;
+    exit_group_prog.attach("syscalls", "sys_enter_exit_group")?;
+    info!("attached sys_enter_exit_group tracepoint");
+
+    // Load and attach sys_enter_write tracepoint.
+    let write_prog: &mut TracePoint = ebpf
+        .program_mut("sys_enter_write")
+        .context("sys_enter_write program not found")?
+        .try_into()?;
+    write_prog.load()?;
+    write_prog.attach("syscalls", "sys_enter_write")?;
+    info!("attached sys_enter_write tracepoint");
+
+    // Load and attach sys_enter_read tracepoint.
+    let read_enter_prog: &mut TracePoint = ebpf
+        .program_mut("sys_enter_read")
+        .context("sys_enter_read program not found")?
+        .try_into()?;
+    read_enter_prog.load()?;
+    read_enter_prog.attach("syscalls", "sys_enter_read")?;
+    info!("attached sys_enter_read tracepoint");
+
+    // Load and attach sys_exit_read tracepoint.
+    let read_exit_prog: &mut TracePoint = ebpf
+        .program_mut("sys_exit_read")
+        .context("sys_exit_read program not found")?
+        .try_into()?;
+    read_exit_prog.load()?;
+    read_exit_prog.attach("syscalls", "sys_exit_read")?;
+    info!("attached sys_exit_read tracepoint");
+
+    // Tell eBPF to skip events from our own process (avoids feedback loops).
+    let mut self_tgid_map: aya::maps::Array<_, u32> = aya::maps::Array::try_from(
+        ebpf.take_map("SELF_TGID")
+            .context("SELF_TGID map not found")?,
+    )?;
+    self_tgid_map.set(0, std::process::id(), 0)?;
+
     // Resolve kernel struct field offsets from BTF and pass to eBPF.
     let offsets = btf::resolve_task_field_offsets()?;
     info!(
@@ -107,43 +150,80 @@ async fn consume_events(mut ring_buf: RingBuf<aya::maps::MapData>) -> Result<()>
 
         // Drain all available events.
         while let Some(item) = ring_buf.next() {
-            let data: &[u8] = &item;
-            let Some(header) = event::parse_header(data) else {
-                tracing::warn!(len = data.len(), "event too short, skipping");
-                continue;
-            };
-
-            match header.event_type {
-                EventType::Exec => {
-                    if let Some(exec) = event::parse_exec_event(data) {
-                        info!(
-                            event = "exec",
-                            pid = exec.pid,
-                            ppid = exec.ppid,
-                            uid = exec.uid,
-                            gid = exec.gid,
-                            euid = exec.euid,
-                            comm = %exec.comm,
-                            tty_nr = exec.tty_nr,
-                            cgroup_id = exec.cgroup_id,
-                            filename = %exec.filename,
-                            argv = ?exec.argv,
-                            retval = exec.retval,
-                        );
-                    } else {
-                        tracing::warn!("exec event too short");
-                    }
-                }
-                EventType::Read | EventType::Write | EventType::Exit => {
-                    tracing::debug!(
-                        event_type = ?header.event_type,
-                        "unhandled event type"
-                    );
-                }
-            }
+            handle_event(&item);
         }
 
         guard.clear_ready();
+    }
+}
+
+fn handle_event(data: &[u8]) {
+    let Some(header) = event::parse_header(data) else {
+        tracing::warn!(len = data.len(), "event too short, skipping");
+        return;
+    };
+
+    match header.event_type {
+        EventType::Exec => {
+            if let Some(exec) = event::parse_exec_event(data) {
+                info!(
+                    event = "exec",
+                    pid = exec.pid,
+                    ppid = exec.ppid,
+                    uid = exec.uid,
+                    gid = exec.gid,
+                    euid = exec.euid,
+                    comm = %exec.comm,
+                    tty_nr = exec.tty_nr,
+                    cgroup_id = exec.cgroup_id,
+                    filename = %exec.filename,
+                    argv = ?exec.argv,
+                    retval = exec.retval,
+                );
+            } else {
+                tracing::warn!("exec event too short");
+            }
+        }
+        EventType::Exit => {
+            if let Some(exit) = event::parse_exit_event(data) {
+                info!(
+                    event = "exit",
+                    pid = exit.pid,
+                    ppid = exit.ppid,
+                    uid = exit.uid,
+                    gid = exit.gid,
+                    euid = exit.euid,
+                    comm = %exit.comm,
+                    tty_nr = exit.tty_nr,
+                    cgroup_id = exit.cgroup_id,
+                    exit_code = exit.exit_code,
+                );
+            } else {
+                tracing::warn!("exit event too short");
+            }
+        }
+        EventType::Read | EventType::Write => {
+            if let Some(io) = event::parse_io_event(data) {
+                let data_str = String::from_utf8_lossy(&io.data);
+                info!(
+                    event = if header.event_type == EventType::Read { "read" } else { "write" },
+                    pid = io.pid,
+                    ppid = io.ppid,
+                    uid = io.uid,
+                    gid = io.gid,
+                    euid = io.euid,
+                    comm = %io.comm,
+                    tty_nr = io.tty_nr,
+                    cgroup_id = io.cgroup_id,
+                    fd = io.fd,
+                    data_len = io.data.len(),
+                    count = io.count,
+                    data = %data_str,
+                );
+            } else {
+                tracing::warn!("io event too short");
+            }
+        }
     }
 }
 
