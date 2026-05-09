@@ -20,6 +20,7 @@ r2d2 = "0.8"
 r2d2_sqlite = "0.28"
 rusqlite = { version = "0.35", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
+shspectr-common = { path = "../shspectr-common", features = ["std"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
 tower = "0.5"

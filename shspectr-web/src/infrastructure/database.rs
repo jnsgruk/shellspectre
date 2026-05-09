@@ -116,4 +116,5 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(session_id, event_type);
+CREATE INDEX IF NOT EXISTS idx_events_ppid ON events(ppid);
 ";

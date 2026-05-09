@@ -96,8 +96,8 @@ async fn api_events_returns_html_with_datastar_header() {
         .to_str()
         .unwrap();
     assert!(
-        ct.contains("text/html"),
-        "should return HTML fragment: {ct}"
+        ct.contains("text/event-stream"),
+        "should return SSE stream: {ct}"
     );
 
     let body = resp.text().await.unwrap();
@@ -144,6 +144,101 @@ async fn api_events_filter() {
 
     assert_eq!(resp["total_items"], 1);
     assert_eq!(resp["items"][0]["comm"], "cmd2");
+}
+
+#[tokio::test]
+async fn api_events_negation_filter() {
+    let (addr, pool) = support::start_test_server().await;
+    seed_events(&pool, 5);
+
+    // `!comm:cmd2` should exclude cmd2, returning 4 events.
+    let resp: serde_json::Value = reqwest::get(format!("http://{addr}/api/v1/events?q=!comm:cmd2"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(resp["total_items"], 4);
+    let comms: Vec<&str> = resp["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["comm"].as_str().unwrap())
+        .collect();
+    assert!(
+        !comms.contains(&"cmd2"),
+        "cmd2 should be excluded: {comms:?}"
+    );
+}
+
+#[tokio::test]
+async fn api_events_negation_glob_url_encoded() {
+    let (addr, pool) = support::start_test_server().await;
+
+    // Insert events with different comm values.
+    let conn = pool.get().expect("get conn");
+    conn.execute(
+        "INSERT INTO sessions (id, started_at, root_pid, uid, euid) \
+         VALUES ('s1', datetime('now'), 100, 1000, 1000)",
+        [],
+    )
+    .expect("insert session");
+    for (i, comm) in ["git", "git", "ps", "bash"].iter().enumerate() {
+        conn.execute(
+            "INSERT INTO events \
+             (session_id, event_type, timestamp, pid, ppid, uid, gid, euid, comm, filename, argv, exit_code) \
+             VALUES ('s1', 'exec', datetime('now'), ?1, 1, 1000, 1000, 1000, ?2, '/usr/bin/cmd', '[]', 0)",
+            rusqlite::params![100 + i as u32, comm],
+        )
+        .expect("insert event");
+    }
+    drop(conn);
+
+    // encodeURIComponent('!comm:*git*') → '%21comm%3A%2Agit%2A'
+    let resp: serde_json::Value =
+        reqwest::get(format!("http://{addr}/api/v1/events?q=%21comm%3A%2Agit%2A"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+
+    assert_eq!(resp["total_items"], 2, "should exclude git: {resp:#}");
+    let comms: Vec<&str> = resp["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["comm"].as_str().unwrap())
+        .collect();
+    assert!(!comms.contains(&"git"), "git should be excluded: {comms:?}");
+}
+
+#[tokio::test]
+async fn api_events_negation_filter_url_encoded() {
+    let (addr, pool) = support::start_test_server().await;
+    seed_events(&pool, 5);
+
+    // URL-encoded `!comm:cmd2` → `%21comm%3Acmd2` (as sent by encodeURIComponent).
+    let resp: serde_json::Value =
+        reqwest::get(format!("http://{addr}/api/v1/events?q=%21comm%3Acmd2"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+
+    assert_eq!(resp["total_items"], 4);
+    let comms: Vec<&str> = resp["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["comm"].as_str().unwrap())
+        .collect();
+    assert!(
+        !comms.contains(&"cmd2"),
+        "cmd2 should be excluded: {comms:?}"
+    );
 }
 
 #[tokio::test]

@@ -8,13 +8,13 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::{Router, routing::get};
+use axum::{Json, Router, routing::get};
 use futures::StreamExt;
 use serde::Deserialize;
 
 use crate::application::state::AppState;
 use crate::domain::event::EventFilter;
-use crate::domain::listing::{EventSortKey, ListRequest, SortDirection};
+use crate::domain::listing::{EventSortKey, ListRequest, Page, SortDirection};
 use crate::presentation::web::event::{EventDetailView, EventSummaryView};
 use crate::presentation::web::listing::{ListNavigator, Paginated};
 
@@ -38,6 +38,9 @@ pub struct EventListParams {
     /// Filter query string.
     #[serde(default)]
     pub q: String,
+    /// If true, return only new rows for infinite scroll append.
+    #[serde(default)]
+    pub append: bool,
 }
 
 const fn default_page() -> u32 {
@@ -53,6 +56,59 @@ const fn default_page_size() -> u32 {
 struct EventListFragment {
     paginated: Paginated,
     nav: ListNavigator,
+}
+
+/// Askama template for appending rows (infinite scroll) — rows only.
+#[derive(Template)]
+#[template(path = "partials/event_rows_append.html")]
+struct EventRowsAppendFragment {
+    paginated: Paginated,
+}
+
+/// Askama template for the infinite scroll sentinel.
+#[derive(Template)]
+#[template(path = "partials/pagination.html")]
+struct PaginationFragment {
+    paginated: Paginated,
+    nav: ListNavigator,
+}
+
+/// Build an SSE response that appends rows and updates the scroll sentinel.
+fn infinite_scroll_response(
+    page: &Page<crate::domain::event::EventSummary>,
+    filter: &EventFilter,
+    sort: EventSortKey,
+    dir: SortDirection,
+    page_size: u32,
+) -> Response {
+    let paginated = Paginated::from_page(page);
+    let nav = ListNavigator::new(filter, sort, dir, page_size);
+
+    let rows_template = EventRowsAppendFragment {
+        paginated: Paginated::from_page(page),
+    };
+    let sentinel_template = PaginationFragment { paginated, nav };
+
+    let rows_html = rows_template.render().unwrap_or_default();
+    let sentinel_html = sentinel_template.render().unwrap_or_default();
+
+    let rows_evt = Event::default()
+        .event("datastar-patch-elements")
+        .data(sse_patch_elements(&rows_html, "#event-rows", "append"));
+
+    let sentinel_evt = Event::default()
+        .event("datastar-patch-elements")
+        .data(sse_patch_elements(
+            &sentinel_html,
+            "#load-more-sentinel",
+            "outer",
+        ));
+
+    let stream = tokio_stream::iter(vec![Ok::<_, Infallible>(rows_evt), Ok(sentinel_evt)]);
+
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 /// `GET /api/v1/events`
@@ -83,16 +139,29 @@ async fn list_events(
     };
 
     if is_datastar_request(&headers) {
-        let paginated = Paginated::from_page(&page);
+        if params.append {
+            return infinite_scroll_response(
+                &page,
+                &filter,
+                params.sort,
+                params.dir,
+                req.page_size,
+            );
+        }
+
+        let paginated = Paginated::from_page_with_warnings(&page, filter.warnings.clone());
         let nav = ListNavigator::new(&filter, params.sort, params.dir, req.page_size);
         let template = EventListFragment { paginated, nav };
         match template.render() {
-            Ok(html) => (
-                StatusCode::OK,
-                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-                html,
-            )
-                .into_response(),
+            Ok(html) => {
+                let evt = Event::default()
+                    .event("datastar-patch-elements")
+                    .data(sse_patch_elements(&html, "#event-list-container", "outer"));
+                let stream = tokio_stream::iter(vec![Ok::<_, Infallible>(evt)]);
+                Sse::new(stream)
+                    .keep_alive(KeepAlive::default())
+                    .into_response()
+            }
             Err(err) => {
                 tracing::error!(%err, "failed to render event list fragment");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -115,12 +184,23 @@ async fn list_events(
     }
 }
 
+/// Format HTML as a Datastar v1 SSE `datastar-patch-elements` data payload.
+fn sse_patch_elements(html: &str, selector: &str, mode: &str) -> String {
+    let elements: String = html
+        .lines()
+        .map(|line| format!("elements {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{elements}\nselector {selector}\nmode {mode}")
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/events/live", get(live_events))
         .route("/api/v1/events/{id}/detail", get(get_event_detail))
         .route("/api/v1/events/{id}/raw", get(get_event_raw))
+        .route("/api/v1/filters/keywords", get(filter_keywords))
 }
 
 /// Query parameters for the live events endpoint.
@@ -274,6 +354,25 @@ async fn get_event_raw(
         raw,
     )
         .into_response()
+}
+
+/// `GET /api/v1/filters/keywords`
+///
+/// Returns the filter keyword registry as JSON for autocompletion and help.
+async fn filter_keywords() -> impl IntoResponse {
+    let keywords: Vec<_> = shspectr_common::FILTER_KEYWORDS
+        .iter()
+        .map(|kw| {
+            serde_json::json!({
+                "keyword": kw.keyword,
+                "description": kw.description,
+                "value_type": kw.value_type,
+                "example": kw.example,
+                "supports_negation": kw.supports_negation,
+            })
+        })
+        .collect();
+    Json(keywords)
 }
 
 /// Askama template for the event detail fragment.

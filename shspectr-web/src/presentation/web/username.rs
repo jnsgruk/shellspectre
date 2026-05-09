@@ -26,6 +26,14 @@ fn load_passwd() -> HashMap<u32, String> {
     map
 }
 
+/// Resolve a username to a UID. Returns `None` if not found.
+pub fn resolve_username(name: &str) -> Option<u32> {
+    PASSWD_CACHE
+        .iter()
+        .find(|(_, v)| v.as_str() == name)
+        .map(|(k, _)| *k)
+}
+
 /// Resolve a UID to a username. Returns the UID as a string if not found.
 pub fn resolve_uid(uid: u32) -> String {
     PASSWD_CACHE

@@ -274,3 +274,99 @@ mod tests {
         assert_eq!(arr[offset_idx::TTY_INDEX as usize], 70);
     }
 }
+
+/// Metadata for a filter keyword, used for autocompletion and help.
+#[derive(Debug, Clone, Copy)]
+pub struct FilterKeywordMeta {
+    /// The keyword name (e.g. "pid", "ppid").
+    pub keyword: &'static str,
+    /// Human-readable description.
+    pub description: &'static str,
+    /// Expected value type: "number", "text", or "glob".
+    pub value_type: &'static str,
+    /// Example usage.
+    pub example: &'static str,
+    /// Whether this keyword supports `!` negation.
+    pub supports_negation: bool,
+}
+
+/// All supported filter keywords.
+pub const FILTER_KEYWORDS: &[FilterKeywordMeta] = &[
+    FilterKeywordMeta {
+        keyword: "pid",
+        description: "Process ID",
+        value_type: "number",
+        example: "pid:1234",
+        supports_negation: true,
+    },
+    FilterKeywordMeta {
+        keyword: "ppid",
+        description: "Parent process ID",
+        value_type: "number",
+        example: "ppid:1",
+        supports_negation: true,
+    },
+    FilterKeywordMeta {
+        keyword: "user",
+        description: "Username or UID",
+        value_type: "text",
+        example: "user:root",
+        supports_negation: true,
+    },
+    FilterKeywordMeta {
+        keyword: "comm",
+        description: "Kernel task name (supports * and ? globs)",
+        value_type: "glob",
+        example: "comm:bash",
+        supports_negation: true,
+    },
+    FilterKeywordMeta {
+        keyword: "cmd",
+        description: "Command name from path (supports * and ? globs)",
+        value_type: "glob",
+        example: "cmd:git",
+        supports_negation: true,
+    },
+    FilterKeywordMeta {
+        keyword: "exit",
+        description: "Exit code",
+        value_type: "number",
+        example: "exit:0",
+        supports_negation: true,
+    },
+    FilterKeywordMeta {
+        keyword: "session",
+        description: "Session ID (prefix match)",
+        value_type: "text",
+        example: "session:ox_abc",
+        supports_negation: true,
+    },
+    FilterKeywordMeta {
+        keyword: "gid",
+        description: "Group ID",
+        value_type: "number",
+        example: "gid:1000",
+        supports_negation: true,
+    },
+    FilterKeywordMeta {
+        keyword: "euid",
+        description: "Effective user ID",
+        value_type: "number",
+        example: "euid:0",
+        supports_negation: true,
+    },
+    FilterKeywordMeta {
+        keyword: "tty",
+        description: "TTY number (0 = no PTY)",
+        value_type: "number",
+        example: "tty:34816",
+        supports_negation: true,
+    },
+    FilterKeywordMeta {
+        keyword: "file",
+        description: "Executable path (supports * and ? globs)",
+        value_type: "glob",
+        example: "file:/usr/bin/*",
+        supports_negation: true,
+    },
+];

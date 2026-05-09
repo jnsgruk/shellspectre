@@ -13,35 +13,109 @@
             <div class="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-2 text-sm mb-4">
                 <div>
                     <span class="text-gray-500">Session:</span>
-                    <span class="text-gray-300 font-mono ml-1">{{ detail.session_id }}</span>
+                    <span class="text-gray-300 font-mono ml-1 cursor-pointer hover:text-blue-400 hover:underline underline-offset-2 decoration-dotted transition-colors"
+                          title="Click to filter by session:{{ detail.session_id }}"
+                          data-on:click="
+                              $_query = $_query.replace(/\bsession:\S*/g, '').trim() + ' session:{{ detail.session_id }}';
+                              $_query = $_query.trim();
+                              $_applied = true;
+                              $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)
+                          "
+                    >{{ detail.session_id }}</span>
                 </div>
                 <div>
                     <span class="text-gray-500">PID:</span>
-                    <span class="text-gray-300 font-mono ml-1">{{ detail.pid }}</span>
+                    <span class="text-gray-300 font-mono ml-1 cursor-pointer hover:text-blue-400 hover:underline underline-offset-2 decoration-dotted transition-colors"
+                          title="Click to filter by pid:{{ detail.pid }}"
+                          data-on:click="
+                              $_query = $_query.replace(/\bpid:\S*/g, '').trim() + ' pid:{{ detail.pid }}';
+                              $_query = $_query.trim();
+                              $_applied = true;
+                              $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)
+                          "
+                    >{{ detail.pid }}</span>
                 </div>
                 <div>
                     <span class="text-gray-500">PPID:</span>
-                    <span class="text-gray-300 font-mono ml-1">{{ detail.ppid }}</span>
+                    <span class="text-gray-300 font-mono ml-1 cursor-pointer hover:text-blue-400 hover:underline underline-offset-2 decoration-dotted transition-colors"
+                          title="Click to filter by ppid:{{ detail.ppid }}"
+                          data-on:click="
+                              $_query = $_query.replace(/\bppid:\S*/g, '').trim() + ' ppid:{{ detail.ppid }}';
+                              $_query = $_query.trim();
+                              $_applied = true;
+                              $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)
+                          "
+                    >{{ detail.ppid }}</span>
                 </div>
                 <div>
                     <span class="text-gray-500">UID:</span>
-                    <span class="text-gray-300 font-mono ml-1">{{ detail.uid }}</span>
+                    <span class="text-gray-300 font-mono ml-1 cursor-pointer hover:text-blue-400 hover:underline underline-offset-2 decoration-dotted transition-colors"
+                          title="Click to filter by user:{{ detail.uid_raw }}"
+                          data-on:click="
+                              $_query = $_query.replace(/\buser:\S*/g, '').trim() + ' user:{{ detail.uid_raw }}';
+                              $_query = $_query.trim();
+                              $_applied = true;
+                              $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)
+                          "
+                    >{{ detail.uid }}</span>
                 </div>
                 <div>
                     <span class="text-gray-500">EUID:</span>
-                    <span class="text-gray-300 font-mono ml-1">{{ detail.euid }}</span>
+                    <span class="text-gray-300 font-mono ml-1 cursor-pointer hover:text-blue-400 hover:underline underline-offset-2 decoration-dotted transition-colors"
+                          title="Click to filter by euid:{{ detail.euid_raw }}"
+                          data-on:click="
+                              $_query = $_query.replace(/\beuid:\S*/g, '').trim() + ' euid:{{ detail.euid_raw }}';
+                              $_query = $_query.trim();
+                              $_applied = true;
+                              $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)
+                          "
+                    >{{ detail.euid }}</span>
                 </div>
                 <div>
                     <span class="text-gray-500">GID:</span>
-                    <span class="text-gray-300 font-mono ml-1">{{ detail.gid }}</span>
+                    <span class="text-gray-300 font-mono ml-1 cursor-pointer hover:text-blue-400 hover:underline underline-offset-2 decoration-dotted transition-colors"
+                          title="Click to filter by gid:{{ detail.gid }}"
+                          data-on:click="
+                              $_query = $_query.replace(/\bgid:\S*/g, '').trim() + ' gid:{{ detail.gid }}';
+                              $_query = $_query.trim();
+                              $_applied = true;
+                              $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)
+                          "
+                    >{{ detail.gid }}</span>
                 </div>
                 <div>
                     <span class="text-gray-500">TTY:</span>
+                    {% match detail.tty_nr_raw %}
+                    {% when Some with (nr) %}
+                    <span class="text-gray-300 font-mono ml-1 cursor-pointer hover:text-blue-400 hover:underline underline-offset-2 decoration-dotted transition-colors"
+                          title="Click to filter by tty:{{ nr }}"
+                          data-on:click="
+                              $_query = $_query.replace(/\btty:\S*/g, '').trim() + ' tty:{{ nr }}';
+                              $_query = $_query.trim();
+                              $_applied = true;
+                              $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)
+                          "
+                    >{{ detail.tty }}</span>
+                    {% when None %}
                     <span class="text-gray-300 font-mono ml-1">{{ detail.tty }}</span>
+                    {% endmatch %}
                 </div>
                 <div>
                     <span class="text-gray-500">Exit:</span>
+                    {% match detail.exit_code_raw %}
+                    {% when Some with (code) %}
+                    <span class="text-gray-300 font-mono ml-1 cursor-pointer hover:text-blue-400 hover:underline underline-offset-2 decoration-dotted transition-colors"
+                          title="Click to filter by exit:{{ code }}"
+                          data-on:click="
+                              $_query = $_query.replace(/\bexit:\S*/g, '').trim() + ' exit:{{ code }}';
+                              $_query = $_query.trim();
+                              $_applied = true;
+                              $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)
+                          "
+                    >{{ detail.exit_code }}</span>
+                    {% when None %}
                     <span class="text-gray-300 font-mono ml-1">{{ detail.exit_code }}</span>
+                    {% endmatch %}
                 </div>
             </div>
 
@@ -55,7 +129,7 @@
             <div class="mb-3">
                 <div class="flex items-center gap-3 mb-1">
                     <span class="text-xs text-gray-500 uppercase tracking-wider">stdin ({{ detail.stdin_bytes }} bytes)</span>
-                    (<a href="/api/v1/events/{{ detail.id }}/raw?stream=stdin" target="_blank" class="text-xs text-gray-600 hover:text-gray-400">raw</a>)
+                    <a href="/api/v1/events/{{ detail.id }}/raw?stream=stdin" target="_blank" class="text-xs text-gray-600 hover:text-gray-400 border border-gray-700 hover:border-gray-500 rounded px-1.5 py-0.5">raw ↗</a>
                 </div>
                 <pre class="ansi-pre px-3 py-2 bg-gray-950 rounded text-sm text-gray-300 font-mono whitespace-pre-wrap break-all max-h-48 overflow-y-auto">{{ detail.stdin_html|safe }}</pre>
             </div>
@@ -65,7 +139,7 @@
             <div class="mb-3">
                 <div class="flex items-center gap-3 mb-1">
                     <span class="text-xs text-gray-500 uppercase tracking-wider">stdout/stderr ({{ detail.stdout_bytes }} bytes)</span>
-                    <a href="/api/v1/events/{{ detail.id }}/raw?stream=stdout" target="_blank" class="text-xs text-gray-600 hover:text-gray-400">raw ↗</a>
+                    <a href="/api/v1/events/{{ detail.id }}/raw?stream=stdout" target="_blank" class="text-xs text-gray-600 hover:text-gray-400 border border-gray-700 hover:border-gray-500 rounded px-1.5 py-0.5">raw ↗</a>
                 </div>
                 <pre class="ansi-pre px-3 py-2 bg-gray-950 rounded text-sm text-gray-300 font-mono whitespace-pre-wrap break-all max-h-48 overflow-y-auto">{{ detail.stdout_html|safe }}</pre>
             </div>

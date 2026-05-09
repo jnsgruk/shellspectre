@@ -1,26 +1,15 @@
-<div id="pagination" data-show="!$_live" class="flex items-center justify-between mt-4 text-sm text-gray-400">
-    <div>
-        Showing {{ paginated.items.len() }} of {{ paginated.total_items }} events
-    </div>
-    <div class="flex items-center gap-4">
-        {% if paginated.has_prev %}
-        <button
-            class="px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300"
-            data-on:click="@get('{{ nav.page_url(paginated.page - 1) }}')"
-        >◀ Prev</button>
-        {% else %}
-        <span class="px-3 py-1 rounded bg-gray-800/50 text-gray-600 cursor-not-allowed">◀ Prev</span>
-        {% endif %}
-
-        <span>Page {{ paginated.page }} of {{ paginated.total_pages }}</span>
-
-        {% if paginated.has_next %}
-        <button
-            class="px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300"
-            data-on:click="@get('{{ nav.page_url(paginated.page + 1) }}')"
-        >Next ▶</button>
-        {% else %}
-        <span class="px-3 py-1 rounded bg-gray-800/50 text-gray-600 cursor-not-allowed">Next ▶</span>
-        {% endif %}
-    </div>
+{% if paginated.has_next %}
+<div id="load-more-sentinel"
+    data-on-intersect__once="@get('{{ nav.page_url(paginated.page + 1) }}&append=true')"
+    class="py-8 text-center"
+    data-show="!$_live"
+>
+    <span class="text-xs text-gray-600 tracking-wide uppercase">Loading more&hellip;</span>
 </div>
+{% else %}
+<div id="load-more-sentinel" class="py-6 text-center" data-show="!$_live">
+    {% if paginated.total_items > 0 %}
+    <span class="text-xs text-gray-600 tracking-wide">{{ paginated.total_items }} events</span>
+    {% endif %}
+</div>
+{% endif %}

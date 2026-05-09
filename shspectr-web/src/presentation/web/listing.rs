@@ -21,6 +21,8 @@ pub struct Paginated {
     pub has_prev: bool,
     /// Whether there is a next page.
     pub has_next: bool,
+    /// Filter parse warnings.
+    pub warnings: Vec<String>,
 }
 
 impl Paginated {
@@ -38,7 +40,18 @@ impl Paginated {
             total_pages: page.total_pages(),
             has_prev: page.has_prev(),
             has_next: page.has_next(),
+            warnings: Vec::new(),
         }
+    }
+
+    /// Create from a domain Page with filter warnings.
+    pub fn from_page_with_warnings(
+        page: &Page<crate::domain::event::EventSummary>,
+        warnings: Vec<String>,
+    ) -> Self {
+        let mut p = Self::from_page(page);
+        p.warnings = warnings;
+        p
     }
 }
 

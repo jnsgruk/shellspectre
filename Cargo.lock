@@ -1655,6 +1655,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "shspectr-common",
  "tokio",
  "tokio-stream",
  "tower",

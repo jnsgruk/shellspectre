@@ -10,6 +10,7 @@ use crate::application::state::AppState;
 use crate::domain::event::EventFilter;
 use crate::domain::listing::ListRequest;
 use crate::presentation::web::listing::{ListNavigator, Paginated};
+use shspectr_common::FilterKeywordMeta;
 
 /// Compiled Tailwind CSS, embedded at build time.
 const STYLES_CSS: &str = include_str!(env!("TAILWIND_CSS_PATH"));
@@ -21,6 +22,7 @@ struct IndexTemplate {
     paginated: Paginated,
     nav: ListNavigator,
     initial_query: String,
+    filter_keywords: &'static [FilterKeywordMeta],
 }
 
 async fn index(State(state): State<AppState>) -> Response {
@@ -43,6 +45,7 @@ async fn index(State(state): State<AppState>) -> Response {
         paginated,
         nav,
         initial_query: String::new(),
+        filter_keywords: shspectr_common::FILTER_KEYWORDS,
     };
 
     match template.render() {

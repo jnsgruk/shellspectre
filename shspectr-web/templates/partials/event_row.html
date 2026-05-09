@@ -22,14 +22,52 @@
         ><svg class="inline w-2.5 h-2.5 fill-current" viewBox="0 0 10 10"><polygon points="0,0 10,5 0,10"/></svg></span>
         {{ event.timestamp }}
     </td>
-    <td class="px-3 py-2 text-sm text-gray-400">{{ event.user }}</td>
-    <td class="px-3 py-2 text-sm font-mono font-bold text-gray-200 whitespace-nowrap">{{ event.command_name }}</td>
-    <td class="px-3 py-2 text-sm font-mono text-gray-400 max-w-0 w-full overflow-hidden" title="{{ event.command_dir }}{{ event.command_full }}">
-        <span class="block truncate">{% if !event.command_dir.is_empty() %}<span class="text-gray-600">{{ event.command_dir }}</span>{% endif %}{% if !event.command_args.is_empty() %}<span class="text-gray-400">{{ event.command_args }}</span>{% endif %}</span>
+    <td class="px-3 py-2 text-sm text-gray-400 group"
+        data-on:click__stop="
+            $_query = $_query.replace(/\buser:\S*/g, '').trim() + ' user:{{ event.uid }}';
+            $_query = $_query.trim();
+            $_applied = true;
+            $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)
+        "
+    >
+        <span class="cursor-pointer group-hover:text-gray-200 group-hover:underline underline-offset-2 decoration-dotted transition-colors" title="Click to filter by user:{{ event.uid }}">{{ event.user }}</span>
     </td>
+    <td class="px-3 py-2 text-sm font-mono font-bold text-gray-200 whitespace-nowrap group"
+        data-on:click__stop="
+            $_query = $_query.replace(/\bcmd:\S*/g, '').trim() + ' cmd:{{ event.command_name }}';
+            $_query = $_query.trim();
+            $_applied = true;
+            $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)
+        "
+    >
+        <span class="cursor-pointer group-hover:underline underline-offset-2 decoration-dotted transition-colors" title="Click to filter by cmd:{{ event.command_name }}">{{ event.command_name }}</span>
+    </td>
+    <td class="px-3 py-2 text-sm font-mono text-gray-400 max-w-0 w-full overflow-hidden" title="{{ event.command_dir }}{{ event.command_full }}">
+        <span class="block truncate">{% if !event.command_dir.is_empty() %}<span class="text-gray-600">{{ event.command_dir }}{{ event.command_name }}</span>{% endif %}{% if !event.command_args.is_empty() %}<span class="text-gray-400"> {{ event.command_args }}</span>{% endif %}</span>
+    </td>
+    {% match event.exit_code_raw %}
+    {% when Some with (code) %}
+    <td class="px-3 py-2 text-sm font-mono {{ event.exit_code_class }} group"
+        data-on:click__stop="
+            $_query = $_query.replace(/\bexit:\S*/g, '').trim() + ' exit:{{ code }}';
+            $_query = $_query.trim();
+            $_applied = true;
+            $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)
+        "
+    >
+        <span class="cursor-pointer group-hover:underline underline-offset-2 decoration-dotted transition-colors" title="Click to filter by exit:{{ code }}">{{ event.exit_code }}</span>
+    </td>
+    {% when None %}
     <td class="px-3 py-2 text-sm font-mono {{ event.exit_code_class }}">{{ event.exit_code }}</td>
-    <td class="px-3 py-2 text-sm font-mono text-gray-500" title="{{ event.session_id }}">
-        {{ event.session_id_short }}
+    {% endmatch %}
+    <td class="px-3 py-2 text-sm font-mono text-gray-500 group" title="{{ event.session_id }}"
+        data-on:click__stop="
+            $_query = 'session:{{ event.session_id }}';
+            $_applied = true;
+            $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)
+        "
+    >
+        <span class="cursor-pointer group-hover:text-gray-300 group-hover:underline underline-offset-2 decoration-dotted transition-colors">{{ event.session_id_short }}</span>
     </td>
 </tr>
 <tr id="detail-{{ event.id }}" class="hidden">

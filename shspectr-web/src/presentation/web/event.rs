@@ -34,6 +34,10 @@ pub struct EventSummaryView {
     pub exit_code: String,
     /// CSS class for exit code styling.
     pub exit_code_class: &'static str,
+    /// Raw UID for click-to-filter.
+    pub uid: u32,
+    /// Raw exit code for click-to-filter (None when not yet exited).
+    pub exit_code_raw: Option<i32>,
 }
 
 /// Maximum length for the truncated args display.
@@ -41,6 +45,7 @@ const MAX_ARGS_DISPLAY_LEN: usize = 40;
 
 impl EventSummaryView {
     /// Create a view from a domain `EventSummary`.
+    #[allow(clippy::too_many_lines)]
     pub fn from_summary(s: &EventSummary) -> Self {
         let comm = s.comm.clone().unwrap_or_else(|| "\u{2014}".to_owned());
 
@@ -131,6 +136,8 @@ impl EventSummaryView {
             command_full,
             exit_code,
             exit_code_class,
+            uid: s.uid,
+            exit_code_raw: s.exit_code,
         }
     }
 }
@@ -204,6 +211,14 @@ pub struct EventDetailView {
     pub stdout_html: String,
     /// Total stdout bytes.
     pub stdout_bytes: u64,
+    /// Raw UID for click-to-filter.
+    pub uid_raw: u32,
+    /// Raw EUID for click-to-filter.
+    pub euid_raw: u32,
+    /// Raw TTY number for click-to-filter (None when no TTY).
+    pub tty_nr_raw: Option<u32>,
+    /// Raw exit code for click-to-filter (None when not yet exited).
+    pub exit_code_raw: Option<i32>,
 }
 
 impl EventDetailView {
@@ -254,6 +269,10 @@ impl EventDetailView {
             has_stdout: !d.stdout_data.is_empty(),
             stdout_html,
             stdout_bytes,
+            uid_raw: d.summary.uid,
+            euid_raw: d.summary.euid,
+            tty_nr_raw: d.tty_nr.filter(|&nr| nr > 0),
+            exit_code_raw: d.summary.exit_code,
         }
     }
 }

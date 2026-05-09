@@ -1,4 +1,11 @@
 <div id="event-list-container">
+    {% if !paginated.warnings.is_empty() %}
+    <div class="px-3 py-2 mb-1 text-xs text-amber-400">
+        {% for warning in &paginated.warnings %}
+        <div>⚠ {{ warning }}</div>
+        {% endfor %}
+    </div>
+    {% endif %}
     <table class="w-full text-left">
         <thead>
             <tr class="border-b border-gray-700 text-gray-400 text-xs uppercase tracking-wider">

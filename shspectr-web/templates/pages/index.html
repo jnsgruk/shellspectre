@@ -2,35 +2,81 @@
 
 {% block title %}shspectr — events{% endblock %}
 
-{% block content %}
-<div id="app" data-signals='{"_query": "{{ initial_query }}", "_live": false, "_liveCount": 0}'>
-    <!-- Filter Bar -->
-    <div class="mb-6">
-        <div class="flex gap-2">
+{% block body_attrs %}data-signals='{"_query": "{{ initial_query }}", "_live": false, "_liveCount": 0, "_applied": {{ initial_query != "" }}, "_showSuggestions": false, "_showFilterHelp": false}'{% endblock %}
+
+{% block nav %}
+    <!-- Filter bar: absolutely centred in the header -->
+    <div class="absolute left-1/2 -translate-x-1/2 w-[40rem] max-w-[55vw]">
+        <div class="relative">
             <input
                 type="text"
                 data-bind:_query
-                placeholder="Filter: user:root comm:bash exit:0 ..."
-                class="flex-1 px-4 py-2 rounded bg-gray-900 border border-gray-700 text-gray-200 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono text-sm"
-                data-on:keydown="evt.key === 'Enter' && ($_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query))"
+                placeholder="Filter (e.g. ppid:1 user:root !exit:0) — type for suggestions"
+                class="w-full pl-3 pr-28 py-1.5 rounded bg-gray-900 border border-gray-700 text-gray-200 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono text-sm"
+                data-on:keydown="evt.key === 'Enter' && ($_applied = true, $_showSuggestions = false, $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)); evt.key === 'Escape' && ($_showSuggestions = false)"
+                data-on:input="$_applied = false"
+                data-on:focus="$_showSuggestions = true"
+                data-on:blur="setTimeout(() => $_showSuggestions = false, 200)"
             />
+            <!-- Help button -->
             <button
-                class="px-4 py-2 rounded bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium"
-                data-on:click="$_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)"
+                class="absolute right-[5.5rem] inset-y-0 px-2 flex items-center text-gray-500 hover:text-gray-300 text-sm font-bold"
+                data-on:click__stop="$_showFilterHelp = !$_showFilterHelp"
+                title="Filter syntax help"
+            >?</button>
+            <!-- Clear button (filter applied) -->
+            <button
+                data-show="$_applied"
+                class="absolute right-0 inset-y-0 px-3 flex items-center text-sm font-medium text-red-400 hover:text-white bg-gray-900 hover:bg-red-600 rounded-r border-l border-gray-700 transition-colors"
+                data-on:click="$_query = ''; $_applied = false; $_live ? @get('/api/v1/events/live?q=') : @get('/api/v1/events?q=')"
+            >✕ Clear</button>
+            <!-- Apply button (no filter active) -->
+            <button
+                data-show="!$_applied"
+                class="absolute right-0 inset-y-0 px-3 flex items-center text-sm font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-r transition-colors"
+                data-on:click="$_applied = true; $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)"
             >Apply</button>
-            <button
-                id="live-toggle"
-                data-on:click="$_live = !$_live; $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)"
-                data-class:bg-red-600="$_live"
-                data-class:bg-gray-700="!$_live"
-                class="px-4 py-2 rounded text-white text-sm font-medium"
-            >
-                <span data-show="$_live">● Live</span>
-                <span data-show="!$_live">○ Live</span>
-            </button>
+
+            <!-- Autocompletion dropdown -->
+            <div class="absolute top-full left-0 right-0 mt-1 z-50"
+                 data-show="$_showSuggestions"
+                 data-on:mousedown__prevent="void 0">
+                <div class="bg-gray-900 border border-gray-700 rounded shadow-lg max-h-48 overflow-y-auto">
+                    {% for kw in filter_keywords %}
+                    <button
+                        class="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-800 flex items-center gap-2"
+                        data-on:click="$_query = $_query.replace(/\S*$/, '') + '{{ kw.keyword }}:'; $_showSuggestions = false; document.querySelector('[data-bind\\\\:_query]').focus()"
+                    >
+                        <span class="font-mono text-blue-400">{{ kw.keyword }}:</span>
+                        <span class="text-gray-400">{{ kw.description }}</span>
+                        <span class="text-gray-600 ml-auto text-xs">{{ kw.value_type }}</span>
+                    </button>
+                    {% endfor %}
+                </div>
+            </div>
         </div>
     </div>
 
+    <!-- Live toggle: pinned to the right -->
+    <label class="ml-auto shrink-0 flex items-center gap-2.5 cursor-pointer select-none">
+        <span class="text-sm text-gray-400">Live</span>
+        <button
+            role="switch"
+            data-attr:aria-checked="$_live"
+            data-on:click="$_live = !$_live; $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)"
+            class="relative w-10 h-6 rounded-full transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            data-style:background-color="$_live ? '#22c55e' : '#374151'"
+        >
+            <span
+                class="absolute top-1 left-1 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200"
+                data-style:transform="$_live ? 'translateX(1rem)' : 'translateX(0)'"
+            ></span>
+        </button>
+    </label>
+{% endblock %}
+
+{% block content %}
+<div id="app">
     <!-- Live Status Bar (shown only in live mode) -->
     <div data-show="$_live" class="mb-4 px-4 py-2 rounded bg-gray-900 border border-gray-700 flex items-center justify-between text-sm">
         <div>
@@ -52,5 +98,49 @@
 
     <!-- Event List (initial render, replaced by Datastar on interaction) -->
     {% include "partials/event_list.html" %}
+</div>
+
+<!-- Filter Help Modal -->
+<div data-show="$_showFilterHelp"
+     class="fixed inset-0 z-[100] flex items-center justify-center bg-black/50"
+     data-on:click="$_showFilterHelp = false"
+     data-on:keydown__window="evt.key === 'Escape' && ($_showFilterHelp = false)">
+    <div class="bg-gray-900 border border-gray-700 rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto p-6"
+         data-on:click__stop="void 0">
+        <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-semibold text-gray-200">Filter Syntax</h2>
+            <button class="text-gray-500 hover:text-gray-300" data-on:click="$_showFilterHelp = false">✕</button>
+        </div>
+
+        <h3 class="text-sm font-semibold text-gray-400 uppercase mb-2">Keywords</h3>
+        <table class="w-full text-sm mb-4">
+            <thead><tr class="text-gray-500 text-xs"><th class="text-left py-1">Keyword</th><th class="text-left py-1">Description</th><th class="text-left py-1">Type</th><th class="text-left py-1">Example</th></tr></thead>
+            <tbody>
+                {% for kw in filter_keywords %}
+                <tr class="border-t border-gray-800">
+                    <td class="py-1 font-mono text-blue-400">{{ kw.keyword }}:</td>
+                    <td class="py-1 text-gray-300">{{ kw.description }}</td>
+                    <td class="py-1 text-gray-500">{{ kw.value_type }}</td>
+                    <td class="py-1 font-mono text-gray-400">{{ kw.example }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <h3 class="text-sm font-semibold text-gray-400 uppercase mb-2">Syntax</h3>
+        <div class="text-sm text-gray-300 space-y-1 mb-4">
+            <div><span class="font-mono text-blue-400">keyword:value</span> — filter by exact match or pattern</div>
+            <div><span class="font-mono text-red-400">!keyword:value</span> — negate (exclude matches)</div>
+            <div><span class="font-mono text-gray-400">* ? </span> — glob wildcards for <span class="font-mono">comm:</span> and <span class="font-mono">file:</span></div>
+            <div><span class="text-gray-400">bare words</span> — search across command, filename, and arguments</div>
+        </div>
+
+        <h3 class="text-sm font-semibold text-gray-400 uppercase mb-2">Examples</h3>
+        <div class="text-sm font-mono text-gray-300 space-y-1">
+            <div><span class="text-gray-400">user:root comm:bash</span> — bash commands run by root</div>
+            <div><span class="text-gray-400">!exit:0</span> — commands with non-zero exit</div>
+            <div><span class="text-gray-400">file:/usr/bin/* ppid:1</span> — /usr/bin commands spawned by init</div>
+        </div>
+    </div>
 </div>
 {% endblock %}

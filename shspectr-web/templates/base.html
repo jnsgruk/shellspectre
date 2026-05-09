@@ -35,11 +35,11 @@
     </style>
     <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.1/bundles/datastar.js"></script>
 </head>
-<body class="bg-gray-950 text-gray-100 min-h-screen">
-    <header class="border-b border-gray-800 px-6 py-4">
-        <div class="flex items-center justify-between max-w-7xl mx-auto">
-            <h1 class="text-xl font-mono font-bold tracking-tight">shspectr</h1>
-            <div class="text-sm text-gray-400">session recorder</div>
+<body class="bg-gray-950 text-gray-100 min-h-screen" {% block body_attrs %}{% endblock %}>
+    <header class="sticky top-0 z-50 bg-gray-950 border-b border-gray-800 px-6 py-3">
+        <div class="relative flex items-center max-w-7xl mx-auto">
+            <h1 class="text-xl font-mono font-bold tracking-tight shrink-0">shspectr</h1>
+            {% block nav %}{% endblock %}
         </div>
     </header>
     <main class="max-w-7xl mx-auto px-6 py-8">
