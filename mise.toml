@@ -4,7 +4,7 @@ prek = "latest"
 
 [tasks.build-ebpf]
 description = "Build the eBPF crate (requires nightly)"
-run = "cargo +nightly build --manifest-path oxilog-ebpf/Cargo.toml -Z build-std=core --target bpfel-unknown-none --release"
+run = "cargo +nightly build --manifest-path shspectr-ebpf/Cargo.toml -Z build-std=core --target bpfel-unknown-none --release"
 
 [tasks.build]
 description = "Build everything (eBPF + userspace)"
@@ -13,31 +13,31 @@ run = "cargo build"
 
 [tasks.test]
 description = "Run userspace tests"
-run = "cargo test -p oxilog -p oxilog-common -p oxilog-web"
+run = "cargo test -p shspectr -p shspectr-common -p shspectr-web"
 
 [tasks.test-system]
 description = "Run system integration tests (requires LXD)"
-run = "cargo test -p oxilog-system-tests -- --test-threads=1"
+run = "cargo test -p shspectr-system-tests -- --test-threads=1"
 
 [tasks.fmt]
 description = "Format all Rust code"
 run = [
   "cargo fmt --all",
-  "cargo +nightly fmt --manifest-path oxilog-ebpf/Cargo.toml",
+  "cargo +nightly fmt --manifest-path shspectr-ebpf/Cargo.toml",
 ]
 
 [tasks.fmt-check]
 description = "Check formatting without modifying files"
 run = [
   "cargo fmt --all -- --check",
-  "cargo +nightly fmt --manifest-path oxilog-ebpf/Cargo.toml -- --check",
+  "cargo +nightly fmt --manifest-path shspectr-ebpf/Cargo.toml -- --check",
 ]
 
 [tasks.clippy]
 description = "Lint all Rust code"
 run = [
   "cargo clippy --workspace -- -D warnings",
-  "cargo +nightly clippy --manifest-path oxilog-ebpf/Cargo.toml -Z build-std=core --target bpfel-unknown-none -- -D warnings",
+  "cargo +nightly clippy --manifest-path shspectr-ebpf/Cargo.toml -Z build-std=core --target bpfel-unknown-none -- -D warnings",
 ]
 
 [tasks.check-file-length]
@@ -53,7 +53,7 @@ while IFS= read -r f; do
     echo "ERROR: $f has $lines lines (max $max)"
     failed=1
   fi
-done < <(find oxilog oxilog-common oxilog-ebpf oxilog-web tests/system -name '*.rs' 2>/dev/null)
+done < <(find shspectr shspectr-common shspectr-ebpf shspectr-web tests/system -name '*.rs' 2>/dev/null)
 if [ "$failed" -eq 1 ]; then
   exit 1
 fi
@@ -62,23 +62,23 @@ echo "All files within $max line limit"
 
 [tasks.build-web]
 description = "Build the web crate (downloads Tailwind on first run)"
-run = "cargo build -p oxilog-web"
+run = "cargo build -p shspectr-web"
 
 [tasks.test-web]
 description = "Run web crate tests"
-run = "cargo test -p oxilog-web"
+run = "cargo test -p shspectr-web"
 
 [tasks.run-web]
-description = "Run the web UI server via the main oxilog binary"
+description = "Run the web UI server via the main shspectr binary"
 depends = ["build"]
-run = "cargo run -p oxilog -- web"
+run = "cargo run -p shspectr -- web"
 
 [tasks.run-web-dev]
 description = "Run the web UI server standalone (no eBPF build needed)"
 depends = ["build-web"]
-run = "cargo run -p oxilog-web --"
+run = "cargo run -p shspectr-web --"
 
 [tasks.run]
-description = "Build and run oxilog"
+description = "Build and run shspectr"
 depends = ["build"]
-run = "cargo run -p oxilog --"
+run = "cargo run -p shspectr --"

@@ -1,33 +1,34 @@
 use anyhow::Result;
-use oxilog_system_tests::{oxilog, ssh, vm::TestVm};
+use shspectr_system_tests::{shspectr, ssh, vm::TestVm};
 
-/// Build the oxilog binary path relative to the workspace root.
-fn oxilog_binary() -> String {
+/// Build the shspectr binary path relative to the workspace root.
+fn shspectr_binary() -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    format!("{manifest_dir}/../../target/debug/oxilog")
+    format!("{manifest_dir}/../../target/debug/shspectr")
 }
 
-const REMOTE_DB: &str = "/tmp/oxilog-test.db";
-const LOCAL_DB: &str = "/tmp/oxilog-test-pulled.db";
+const REMOTE_DB: &str = "/tmp/shspectr-test.db";
+const LOCAL_DB: &str = "/tmp/shspectr-test-pulled.db";
 
 #[tokio::test]
 async fn sqlite_sink_stores_events() -> Result<()> {
     let mut vm = TestVm::provision()?;
     let session = ssh::connect(&vm.ip, &vm.private_key_path).await?;
 
-    vm.push_file(&oxilog_binary(), oxilog::REMOTE_BIN)?;
-    ssh::exec(&session, &format!("chmod +x {}", oxilog::REMOTE_BIN)).await?;
+    vm.push_file(&shspectr_binary(), shspectr::REMOTE_BIN)?;
+    ssh::exec(&session, &format!("chmod +x {}", shspectr::REMOTE_BIN)).await?;
 
-    // Start oxilog with SQLite output.
-    let pid = oxilog::start_with_args(&session, &format!("--output sqlite --db-path {REMOTE_DB}"))
-        .await?;
+    // Start shspectr with SQLite output.
+    let pid =
+        shspectr::start_with_args(&session, &format!("--output sqlite --db-path {REMOTE_DB}"))
+            .await?;
 
     // Run commands.
     ssh::exec(&session, "ls /tmp").await?;
     ssh::exec(&session, "true").await?;
     ssh::exec(&session, "false || true").await?;
 
-    let _lines = oxilog::stop_and_collect(&session, &pid).await?;
+    let _lines = shspectr::stop_and_collect(&session, &pid).await?;
 
     // Pull the SQLite DB from the VM.
     vm.pull_file(REMOTE_DB, LOCAL_DB)?;

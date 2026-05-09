@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 /// Bump this suffix whenever the base VM provisioning changes.
-/// When the expected base isn't found, any existing `oxilog-base-*` VMs
+/// When the expected base isn't found, any existing `shspectr-base-*` VMs
 /// are deleted and a new one is created from scratch.
-const BASE_VM_NAME: &str = "oxilog-base-c3d5";
+const BASE_VM_NAME: &str = "shspectr-base-c3d5";
 
 /// An LXD VM managed for integration testing.
 ///
@@ -31,7 +31,7 @@ impl TestVm {
         Self::ensure_base()?;
 
         let suffix = random_suffix();
-        let name = format!("oxilog-test-{suffix}");
+        let name = format!("shspectr-test-{suffix}");
 
         // Copy base VM to new instance
         lxc(&["copy", BASE_VM_NAME, &name])?;
@@ -55,7 +55,7 @@ impl TestVm {
                 "",
                 "-q",
                 "-C",
-                "oxilog-test",
+                "shspectr-test",
             ])
             .status()
             .context("ssh-keygen")?;
@@ -96,7 +96,7 @@ impl TestVm {
     }
 
     /// Ensure the base VM exists. If the expected base isn't found,
-    /// remove any stale `oxilog-base-*` VMs and create a new one.
+    /// remove any stale `shspectr-base-*` VMs and create a new one.
     #[allow(clippy::print_stderr)]
     fn ensure_base() -> Result<()> {
         if vm_exists(BASE_VM_NAME)? {
@@ -104,7 +104,7 @@ impl TestVm {
         }
 
         // Remove stale base VMs
-        let stale = list_vms_matching("oxilog-base-")?;
+        let stale = list_vms_matching("shspectr-base-")?;
         for name in &stale {
             eprintln!("removing stale base VM: {name}");
             let _ = lxc(&["delete", name, "--force"]);

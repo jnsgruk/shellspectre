@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Oxilog is a passive Linux session recorder built with Rust and eBPF (via aya-rs). It hooks syscall tracepoints to capture command executions, I/O, and process lifecycle events for SSH sessions, local interactive shells, and agent-spawned processes.
+ShellSpectre is a passive Linux session recorder built with Rust and eBPF (via aya-rs). It hooks syscall tracepoints to capture command executions, I/O, and process lifecycle events for SSH sessions, local interactive shells, and agent-spawned processes.
 
 See `docs/01-spec.md` for the full specification.
 
@@ -34,13 +34,13 @@ Check existing files in `plans/` to determine the next number. Plans should incl
 ## Workspace Layout
 
 ```
-oxilog/
-├── oxilog/              # Userspace CLI crate (Rust stable)
-├── oxilog-ebpf/         # eBPF probe crate (Rust nightly, #![no_std])
-├── oxilog-common/       # Shared event types (both kernel and userspace, #![no_std])
-├── docs/                # Specifications and design documents
-├── mise.toml            # Toolchain and task definitions
-├── Cargo.toml           # Workspace root
+shspectr/
+├── shspectr/              # Userspace CLI crate (Rust stable)
+├── shspectr-ebpf/         # eBPF probe crate (Rust nightly, #![no_std])
+├── shspectr-common/       # Shared event types (both kernel and userspace, #![no_std])
+├── docs/                  # Specifications and design documents
+├── mise.toml              # Toolchain and task definitions
+├── Cargo.toml             # Workspace root
 └── AGENTS.md
 ```
 
@@ -74,7 +74,7 @@ sudo mise run run -- --filter-pty
 
 - **Rust edition**: 2024
 - **eBPF crate**: `#![no_std]`, `#[no_main]`. No heap allocations. All data structures must fit on the BPF stack or use BPF maps.
-- **Shared types**: All types in `oxilog-common` must be `#[repr(C)]` and `#![no_std]` compatible. These are used directly in both BPF ring buffer events and userspace deserialization.
+- **Shared types**: All types in `shspectr-common` must be `#[repr(C)]` and `#![no_std]` compatible. These are used directly in both BPF ring buffer events and userspace deserialization.
 - **Userspace crate**: Standard Rust. Uses `clap` for CLI, `tracing` + `tracing-subscriber` for structured logging and output, `aya` for BPF program management, `serde` for serialization.
 - **Error handling**: Use `anyhow` in the userspace crate. BPF programs return `Result<(), i64>`.
 - **Formatting**: `cargo fmt` (rustfmt defaults). Run before committing.
@@ -84,22 +84,22 @@ sudo mise run run -- --filter-pty
 
 | Crate | Used in | Purpose |
 |-------|---------|---------|
-| `aya` | oxilog | Load/manage BPF programs, read ring buffer |
-| `aya-ebpf` | oxilog-ebpf | BPF program macros and helpers |
+| `aya` | shspectr | Load/manage BPF programs, read ring buffer |
+| `aya-ebpf` | shspectr-ebpf | BPF program macros and helpers |
 | `aya-log` / `aya-log-ebpf` | both | BPF-side logging to userspace |
-| `clap` | oxilog | CLI argument parsing |
-| `tracing` | oxilog | Structured event output |
-| `tracing-subscriber` | oxilog | JSON formatting, log layers |
-| `rusqlite` | oxilog | SQLite sink storage |
-| `serde` / `serde_json` | oxilog, oxilog-common | Event serialization |
-| `anyhow` | oxilog | Error handling |
-| `tokio` | oxilog | Async runtime for ring buffer consumption |
+| `clap` | shspectr | CLI argument parsing |
+| `tracing` | shspectr | Structured event output |
+| `tracing-subscriber` | shspectr | JSON formatting, log layers |
+| `rusqlite` | shspectr | SQLite sink storage |
+| `serde` / `serde_json` | shspectr, shspectr-common | Event serialization |
+| `anyhow` | shspectr | Error handling |
+| `tokio` | shspectr | Async runtime for ring buffer consumption |
 
 ## Testing
 
-- **Unit tests**: `cargo test -p oxilog`. Cover event parsing, session correlation logic, filter matching, and sink formatting.
+- **Unit tests**: `cargo test -p shspectr`. Cover event parsing, session correlation logic, filter matching, and sink formatting.
 - **Integration tests**: Require root or elevated capabilities. Run in a VM or with `sudo`. These load actual BPF programs and verify end-to-end event capture.
-- **No BPF unit tests**: The `oxilog-ebpf` crate cannot be tested with `cargo test` (no_std, BPF target). Test BPF logic through integration tests.
+- **No BPF unit tests**: The `shspectr-ebpf` crate cannot be tested with `cargo test` (no_std, BPF target). Test BPF logic through integration tests.
 
 ## Architecture Notes
 

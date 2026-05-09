@@ -1096,70 +1096,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "oxilog"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aya",
- "aya-log",
- "bytes",
- "clap",
- "include_bytes_aligned",
- "libc",
- "oxilog-common",
- "oxilog-web",
- "rusqlite",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "oxilog-common"
-version = "0.1.0"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "oxilog-system-tests"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "openssh",
- "rand 0.9.4",
- "rusqlite",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "oxilog-web"
-version = "0.1.0"
-dependencies = [
- "ansi-to-html",
- "anyhow",
- "askama",
- "axum",
- "clap",
- "futures",
- "r2d2",
- "r2d2_sqlite",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1661,6 +1597,71 @@ name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
+
+[[package]]
+name = "shspectr"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aya",
+ "aya-log",
+ "bytes",
+ "clap",
+ "include_bytes_aligned",
+ "libc",
+ "rusqlite",
+ "serde_json",
+ "shspectr-common",
+ "shspectr-web",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "shspectr-common"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "shspectr-system-tests"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "openssh",
+ "rand 0.9.4",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "shspectr-web"
+version = "0.1.0"
+dependencies = [
+ "ansi-to-html",
+ "anyhow",
+ "askama",
+ "axum",
+ "clap",
+ "futures",
+ "r2d2",
+ "r2d2_sqlite",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "signal-hook-registry"

@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["oxilog", "oxilog-common", "oxilog-web", "tests/system"]
-exclude = ["oxilog-ebpf"]
+members = ["shspectr", "shspectr-common", "shspectr-web", "tests/system"]
+exclude = ["shspectr-ebpf"]
 
 [workspace.lints.clippy]
 # Enable pedantic + cargo groups

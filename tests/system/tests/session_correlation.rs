@@ -1,10 +1,10 @@
 use anyhow::Result;
-use oxilog_system_tests::{oxilog, ssh, vm::TestVm};
+use shspectr_system_tests::{shspectr, ssh, vm::TestVm};
 
-/// Build the oxilog binary path relative to the workspace root.
-fn oxilog_binary() -> String {
+/// Build the shspectr binary path relative to the workspace root.
+fn shspectr_binary() -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    format!("{manifest_dir}/../../target/debug/oxilog")
+    format!("{manifest_dir}/../../target/debug/shspectr")
 }
 
 #[tokio::test]
@@ -12,15 +12,15 @@ async fn events_in_same_ssh_session_share_session_id() -> Result<()> {
     let mut vm = TestVm::provision()?;
     let session = ssh::connect(&vm.ip, &vm.private_key_path).await?;
 
-    vm.push_file(&oxilog_binary(), oxilog::REMOTE_BIN)?;
-    ssh::exec(&session, &format!("chmod +x {}", oxilog::REMOTE_BIN)).await?;
+    vm.push_file(&shspectr_binary(), shspectr::REMOTE_BIN)?;
+    ssh::exec(&session, &format!("chmod +x {}", shspectr::REMOTE_BIN)).await?;
 
-    // Start oxilog, run multiple commands in the same SSH session.
-    let pid = oxilog::start(&session).await?;
+    // Start shspectr, run multiple commands in the same SSH session.
+    let pid = shspectr::start(&session).await?;
     ssh::exec(&session, "ls /tmp").await?;
     ssh::exec(&session, "pwd").await?;
     ssh::exec(&session, "whoami").await?;
-    let lines = oxilog::stop_and_collect(&session, &pid).await?;
+    let lines = shspectr::stop_and_collect(&session, &pid).await?;
 
     // Extract session_id from all exec events.
     let session_ids: Vec<String> = lines

@@ -1,10 +1,10 @@
 use anyhow::Result;
-use oxilog_system_tests::{oxilog, ssh, vm::TestVm};
+use shspectr_system_tests::{shspectr, ssh, vm::TestVm};
 
-/// Build the oxilog binary path relative to the workspace root.
-fn oxilog_binary() -> String {
+/// Build the shspectr binary path relative to the workspace root.
+fn shspectr_binary() -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    format!("{manifest_dir}/../../target/debug/oxilog")
+    format!("{manifest_dir}/../../target/debug/shspectr")
 }
 
 #[tokio::test]
@@ -12,17 +12,17 @@ async fn exit_event_captures_exit_codes() -> Result<()> {
     let mut vm = TestVm::provision()?;
     let session = ssh::connect(&vm.ip, &vm.private_key_path).await?;
 
-    vm.push_file(&oxilog_binary(), oxilog::REMOTE_BIN)?;
-    ssh::exec(&session, &format!("chmod +x {}", oxilog::REMOTE_BIN)).await?;
+    vm.push_file(&shspectr_binary(), shspectr::REMOTE_BIN)?;
+    ssh::exec(&session, &format!("chmod +x {}", shspectr::REMOTE_BIN)).await?;
 
-    let pid = oxilog::start(&session).await?;
+    let pid = shspectr::start(&session).await?;
 
     // Run `true` (exit 0) and `false` (exit 1).
     // Wrap `false` so the SSH command itself doesn't fail.
     ssh::exec(&session, "/bin/true").await?;
     ssh::exec(&session, "/bin/false || true").await?;
 
-    let lines = oxilog::stop_and_collect(&session, &pid).await?;
+    let lines = shspectr::stop_and_collect(&session, &pid).await?;
 
     // Assert: exit event with exit_code 0 from /bin/true.
     let has_exit_0 = lines.iter().any(|line| {

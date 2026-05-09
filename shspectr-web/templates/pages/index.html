@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block title %}shspectr — events{% endblock %}
+
+{% block content %}
+<div id="app" data-signals='{"_query": "{{ initial_query }}", "_live": false, "_liveCount": 0}'>
+    <!-- Filter Bar -->
+    <div class="mb-6">
+        <div class="flex gap-2">
+            <input
+                type="text"
+                data-bind:_query
+                placeholder="Filter: user:root comm:bash exit:0 ..."
+                class="flex-1 px-4 py-2 rounded bg-gray-900 border border-gray-700 text-gray-200 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono text-sm"
+                data-on:keydown="evt.key === 'Enter' && ($_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query))"
+            />
+            <button
+                class="px-4 py-2 rounded bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium"
+                data-on:click="$_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)"
+            >Apply</button>
+            <button
+                id="live-toggle"
+                data-on:click="$_live = !$_live; $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)"
+                data-class:bg-red-600="$_live"
+                data-class:bg-gray-700="!$_live"
+                class="px-4 py-2 rounded text-white text-sm font-medium"
+            >
+                <span data-show="$_live">● Live</span>
+                <span data-show="!$_live">○ Live</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Live Status Bar (shown only in live mode) -->
+    <div data-show="$_live" class="mb-4 px-4 py-2 rounded bg-gray-900 border border-gray-700 flex items-center justify-between text-sm">
+        <div>
+            <span class="text-green-400">●</span>
+            <span class="text-gray-300 ml-1">Connected — streaming live events</span>
+        </div>
+        <div class="flex items-center gap-3">
+            <span class="text-gray-500" data-text="`${$_liveCount} events received`"></span>
+            <button
+                class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs"
+                data-on:click="document.getElementById('event-rows').innerHTML = ''; $_liveCount = 0"
+            >✕ Clear</button>
+            <button
+                class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs"
+                data-on:click="$_live = false; @get('/api/v1/events?q=' + $_query)"
+            >← History</button>
+        </div>
+    </div>
+
+    <!-- Event List (initial render, replaced by Datastar on interaction) -->
+    {% include "partials/event_list.html" %}
+</div>
+{% endblock %}

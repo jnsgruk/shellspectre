@@ -1,5 +1,5 @@
 use anyhow::Result;
-use oxilog_system_tests::{ssh, vm::TestVm};
+use shspectr_system_tests::{ssh, vm::TestVm};
 
 #[tokio::test]
 async fn smoke_provision_ssh_teardown() -> Result<()> {
