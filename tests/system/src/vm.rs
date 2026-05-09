@@ -190,6 +190,13 @@ SYSCTL
         self.destroyed = true;
         Ok(())
     }
+
+    /// Push a local file into the VM at the given path.
+    pub fn push_file(&self, local: &str, remote: &str) -> Result<()> {
+        let dest = format!("{}/{}", self.name, remote.trim_start_matches('/'));
+        lxc(&["file", "push", local, &dest])?;
+        Ok(())
+    }
 }
 
 impl Drop for TestVm {

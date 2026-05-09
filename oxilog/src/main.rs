@@ -1,13 +1,14 @@
 use anyhow::{Context, Result};
 use aya::{Ebpf, maps::RingBuf, programs::TracePoint};
 use clap::{Parser, Subcommand};
-use oxilog_common::{EventHeader, EventType, offset_idx};
+use oxilog_common::EventType;
 use std::os::fd::AsRawFd;
 use tokio::io::unix::AsyncFd;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt};
 
 mod btf;
+mod event;
 
 #[derive(Debug, Parser)]
 #[command(name = "oxilog", about = "Passive Linux session recorder")]
@@ -84,13 +85,9 @@ fn run(filter_pty: bool) -> Result<()> {
     );
     let mut offsets_map: aya::maps::Array<_, u64> =
         aya::maps::Array::try_from(ebpf.take_map("OFFSETS").context("OFFSETS map not found")?)?;
-    offsets_map.set(offset_idx::TASK_REAL_PARENT, offsets.task_real_parent, 0)?;
-    offsets_map.set(offset_idx::TASK_TGID, offsets.task_tgid, 0)?;
-    offsets_map.set(offset_idx::TASK_CRED, offsets.task_cred, 0)?;
-    offsets_map.set(offset_idx::CRED_EUID, offsets.cred_euid, 0)?;
-    offsets_map.set(offset_idx::TASK_SIGNAL, offsets.task_signal, 0)?;
-    offsets_map.set(offset_idx::SIGNAL_TTY, offsets.signal_tty, 0)?;
-    offsets_map.set(offset_idx::TTY_INDEX, offsets.tty_index, 0)?;
+    for (idx, value) in (0u32..).zip(offsets.as_array()) {
+        offsets_map.set(idx, value, 0)?;
+    }
 
     // Open the ring buffer.
     let ring_buf = RingBuf::try_from(ebpf.take_map("EVENTS").context("EVENTS map not found")?)?;
@@ -111,18 +108,32 @@ async fn consume_events(mut ring_buf: RingBuf<aya::maps::MapData>) -> Result<()>
         // Drain all available events.
         while let Some(item) = ring_buf.next() {
             let data: &[u8] = &item;
-            if data.len() < core::mem::size_of::<EventHeader>() {
+            let Some(header) = event::parse_header(data) else {
                 tracing::warn!(len = data.len(), "event too short, skipping");
                 continue;
-            }
-
-            // SAFETY: EventHeader is repr(C), we checked the minimum length,
-            // and the ring buffer may not guarantee alignment so we use
-            // read_unaligned.
-            let header = unsafe { core::ptr::read_unaligned(data.as_ptr().cast::<EventHeader>()) };
+            };
 
             match header.event_type {
-                EventType::Exec => log_exec_event(&header, data),
+                EventType::Exec => {
+                    if let Some(exec) = event::parse_exec_event(data) {
+                        info!(
+                            event = "exec",
+                            pid = exec.pid,
+                            ppid = exec.ppid,
+                            uid = exec.uid,
+                            gid = exec.gid,
+                            euid = exec.euid,
+                            comm = %exec.comm,
+                            tty_nr = exec.tty_nr,
+                            cgroup_id = exec.cgroup_id,
+                            filename = %exec.filename,
+                            argv = ?exec.argv,
+                            retval = exec.retval,
+                        );
+                    } else {
+                        tracing::warn!("exec event too short");
+                    }
+                }
                 EventType::Read | EventType::Write | EventType::Exit => {
                     tracing::debug!(
                         event_type = ?header.event_type,
@@ -134,45 +145,6 @@ async fn consume_events(mut ring_buf: RingBuf<aya::maps::MapData>) -> Result<()>
 
         guard.clear_ready();
     }
-}
-
-fn log_exec_event(header: &EventHeader, data: &[u8]) {
-    use oxilog_common::ExecEvent;
-
-    if data.len() < core::mem::size_of::<ExecEvent>() {
-        tracing::warn!("exec event too short");
-        return;
-    }
-
-    // SAFETY: We verified the data length; use read_unaligned for safety.
-    let event = unsafe { core::ptr::read_unaligned(data.as_ptr().cast::<ExecEvent>()) };
-
-    let filename = cstr_from_bytes(&event.filename);
-    let arg_count = event.argc as usize;
-    let argv: Vec<String> = (0..arg_count.min(oxilog_common::MAX_ARGV_COUNT))
-        .map(|i| cstr_from_bytes(&event.argv[i]))
-        .collect();
-
-    info!(
-        event = "exec",
-        pid = header.pid,
-        ppid = header.ppid,
-        uid = header.uid,
-        gid = header.gid,
-        euid = header.euid,
-        comm = %cstr_from_bytes(&header.comm),
-        tty_nr = header.tty_nr,
-        cgroup_id = header.cgroup_id,
-        filename = %filename,
-        argv = ?argv,
-        retval = event.retval,
-    );
-}
-
-/// Extract a UTF-8 string from a null-terminated byte buffer.
-fn cstr_from_bytes(bytes: &[u8]) -> String {
-    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-    String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
 #[allow(clippy::print_stdout)]

@@ -37,6 +37,24 @@ pub struct TaskFieldOffsets {
     pub tty_index: u64,
 }
 
+impl TaskFieldOffsets {
+    /// Return all offsets as an array indexed by [`offset_idx`] constants.
+    ///
+    /// This is the single source of truth for the mapping between struct
+    /// fields and BPF array map indices.
+    pub const fn as_array(&self) -> [u64; offset_idx::COUNT as usize] {
+        [
+            self.task_real_parent,
+            self.task_tgid,
+            self.task_cred,
+            self.cred_euid,
+            self.task_signal,
+            self.signal_tty,
+            self.tty_index,
+        ]
+    }
+}
+
 /// Array map indices for [`TaskFieldOffsets`] fields, used with a
 /// `BPF_MAP_TYPE_ARRAY` of `u64` values.
 pub mod offset_idx {
@@ -130,6 +148,21 @@ pub struct ExecEvent {
     pub retval: i64,
 }
 
+impl ExecEvent {
+    /// Create a zeroed exec event. Useful for test construction and
+    /// scratch buffer initialization.
+    pub const fn zeroed(header: EventHeader) -> Self {
+        Self {
+            header,
+            filename: [0u8; MAX_FILENAME_LEN],
+            argv: [[0u8; MAX_ARG_LEN]; MAX_ARGV_COUNT],
+            argc: 0,
+            _pad: 0,
+            retval: 0,
+        }
+    }
+}
+
 /// I/O event payload — captures read/write data on stdin/stdout/stderr.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -217,5 +250,27 @@ mod tests {
             mem::size_of::<EventHeader>() <= bpf_stack,
             "EventHeader exceeds BPF stack"
         );
+    }
+
+    #[test]
+    fn task_field_offsets_array_length_matches_count() {
+        let offsets = TaskFieldOffsets {
+            task_real_parent: 10,
+            task_tgid: 20,
+            task_cred: 30,
+            cred_euid: 40,
+            task_signal: 50,
+            signal_tty: 60,
+            tty_index: 70,
+        };
+        let arr = offsets.as_array();
+        assert_eq!(arr.len(), offset_idx::COUNT as usize);
+        assert_eq!(arr[offset_idx::TASK_REAL_PARENT as usize], 10);
+        assert_eq!(arr[offset_idx::TASK_TGID as usize], 20);
+        assert_eq!(arr[offset_idx::TASK_CRED as usize], 30);
+        assert_eq!(arr[offset_idx::CRED_EUID as usize], 40);
+        assert_eq!(arr[offset_idx::TASK_SIGNAL as usize], 50);
+        assert_eq!(arr[offset_idx::SIGNAL_TTY as usize], 60);
+        assert_eq!(arr[offset_idx::TTY_INDEX as usize], 70);
     }
 }

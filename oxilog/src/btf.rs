@@ -12,6 +12,7 @@ const BTF_MAGIC: u16 = 0xEB9F;
 const BTF_KIND_STRUCT: u32 = 4;
 
 /// Parsed BTF data with references into the raw byte buffer.
+#[derive(Debug)]
 struct Btf {
     data: Vec<u8>,
     hdr_len: usize,
@@ -21,9 +22,8 @@ struct Btf {
 }
 
 impl Btf {
-    fn from_sys_fs() -> Result<Self> {
-        let data = fs::read("/sys/kernel/btf/vmlinux").context("failed to read kernel BTF")?;
-
+    /// Parse BTF data from raw bytes.
+    fn from_bytes(data: Vec<u8>) -> Result<Self> {
         if data.len() < 24 {
             bail!("BTF data too short");
         }
@@ -44,6 +44,12 @@ impl Btf {
             type_len,
             str_off,
         })
+    }
+
+    /// Read BTF from the kernel's sysfs.
+    fn from_sys_fs() -> Result<Self> {
+        let data = fs::read("/sys/kernel/btf/vmlinux").context("failed to read kernel BTF")?;
+        Self::from_bytes(data)
     }
 
     /// Look up a null-terminated string from the BTF string table.
@@ -149,4 +155,135 @@ pub fn resolve_task_field_offsets() -> Result<TaskFieldOffsets> {
             .struct_field_offset("tty_struct", "index")
             .context("tty_struct.index")?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a minimal synthetic BTF blob with one struct containing the
+    /// given fields. Each field is placed at `index * 8` bytes (bit offset
+    /// = index * 64).
+    fn make_btf(struct_name: &str, fields: &[&str]) -> Vec<u8> {
+        // String table: "\0" + struct_name + "\0" + field1 + "\0" + ...
+        let mut str_table = vec![0u8]; // index 0 = empty string
+        let struct_name_off = str_table.len() as u32;
+        str_table.extend_from_slice(struct_name.as_bytes());
+        str_table.push(0);
+
+        let mut field_name_offs = Vec::new();
+        for field in fields {
+            field_name_offs.push(str_table.len() as u32);
+            str_table.extend_from_slice(field.as_bytes());
+            str_table.push(0);
+        }
+
+        // Type section: one BTF_KIND_STRUCT entry
+        // Type header: name_off(4) + info(4) + size(4) = 12 bytes
+        // Members: name_off(4) + type(4) + bit_offset(4) = 12 bytes each
+        let vlen = fields.len() as u32;
+        let info = (BTF_KIND_STRUCT << 24) | vlen;
+        let struct_size = (fields.len() * 8) as u32;
+
+        let mut type_section = Vec::new();
+        type_section.extend_from_slice(&struct_name_off.to_ne_bytes());
+        type_section.extend_from_slice(&info.to_ne_bytes());
+        type_section.extend_from_slice(&struct_size.to_ne_bytes());
+
+        for (i, &name_off) in field_name_offs.iter().enumerate() {
+            let bit_offset = (i as u32) * 64; // 8 bytes per field
+            type_section.extend_from_slice(&name_off.to_ne_bytes());
+            type_section.extend_from_slice(&0u32.to_ne_bytes()); // type id (unused)
+            type_section.extend_from_slice(&bit_offset.to_ne_bytes());
+        }
+
+        // BTF header (24 bytes)
+        let hdr_len: u32 = 24;
+        let type_off: u32 = 0;
+        let type_len = type_section.len() as u32;
+        let str_off = type_len;
+        let str_len = str_table.len() as u32;
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&BTF_MAGIC.to_ne_bytes()); // magic
+        data.push(1); // version
+        data.push(0); // flags
+        data.extend_from_slice(&hdr_len.to_ne_bytes());
+        data.extend_from_slice(&type_off.to_ne_bytes());
+        data.extend_from_slice(&type_len.to_ne_bytes());
+        data.extend_from_slice(&str_off.to_ne_bytes());
+        data.extend_from_slice(&str_len.to_ne_bytes());
+
+        data.extend_from_slice(&type_section);
+        data.extend_from_slice(&str_table);
+
+        data
+    }
+
+    #[test]
+    fn struct_field_offset_finds_first_field() {
+        let data = make_btf("my_struct", &["alpha", "beta", "gamma"]);
+        let btf = Btf::from_bytes(data).unwrap();
+        assert_eq!(btf.struct_field_offset("my_struct", "alpha").unwrap(), 0);
+    }
+
+    #[test]
+    fn struct_field_offset_finds_later_field() {
+        let data = make_btf("my_struct", &["alpha", "beta", "gamma"]);
+        let btf = Btf::from_bytes(data).unwrap();
+        assert_eq!(btf.struct_field_offset("my_struct", "beta").unwrap(), 8);
+        assert_eq!(btf.struct_field_offset("my_struct", "gamma").unwrap(), 16);
+    }
+
+    #[test]
+    fn struct_field_offset_missing_field() {
+        let data = make_btf("my_struct", &["alpha"]);
+        let btf = Btf::from_bytes(data).unwrap();
+        let err = btf.struct_field_offset("my_struct", "missing").unwrap_err();
+        assert!(
+            err.to_string().contains("field 'missing' not found"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn struct_field_offset_missing_struct() {
+        let data = make_btf("my_struct", &["alpha"]);
+        let btf = Btf::from_bytes(data).unwrap();
+        let err = btf
+            .struct_field_offset("other_struct", "alpha")
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("struct 'other_struct' not found"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn from_bytes_rejects_short_data() {
+        assert!(Btf::from_bytes(vec![0; 10]).is_err());
+    }
+
+    #[test]
+    fn from_bytes_rejects_bad_magic() {
+        let mut data = vec![0u8; 24];
+        data[0] = 0xFF;
+        data[1] = 0xFF;
+        let err = Btf::from_bytes(data).unwrap_err();
+        assert!(err.to_string().contains("bad BTF magic"));
+    }
+
+    #[test]
+    fn extra_bytes_struct_members() {
+        assert_eq!(Btf::extra_bytes(4, 3), 36); // STRUCT: 12 * 3
+        assert_eq!(Btf::extra_bytes(4, 0), 0);
+    }
+
+    #[test]
+    fn extra_bytes_other_kinds() {
+        assert_eq!(Btf::extra_bytes(1, 0), 4); // INT
+        assert_eq!(Btf::extra_bytes(3, 0), 12); // ARRAY
+        assert_eq!(Btf::extra_bytes(2, 0), 0); // PTR
+        assert_eq!(Btf::extra_bytes(6, 2), 16); // ENUM: 8 * 2
+    }
 }
