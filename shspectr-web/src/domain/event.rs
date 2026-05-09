@@ -55,6 +55,10 @@ pub struct EventDetail {
     pub stdin_data: Vec<IoChunk>,
     /// I/O chunks for stdout/stderr (fd=1,2) related to this exec's PID+session.
     pub stdout_data: Vec<IoChunk>,
+    /// Child processes spawned by this process (same session, ppid = this pid).
+    pub children: Vec<ChildProcess>,
+    /// Parent process summary (looked up by ppid in same session).
+    pub parent: Option<ParentProcess>,
 }
 
 /// A single I/O data chunk from a read/write event.
@@ -66,4 +70,36 @@ pub struct IoChunk {
     pub data: String,
     /// Number of bytes in the original syscall.
     pub byte_count: u64,
+}
+
+/// Compact summary of a child process, shown in the parent's detail panel.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChildProcess {
+    /// Database event ID (for linking/navigation).
+    pub id: i64,
+    /// Child PID.
+    pub pid: u32,
+    /// Kernel comm name.
+    pub comm: Option<String>,
+    /// Executable path.
+    pub filename: Option<String>,
+    /// Arguments as JSON array string.
+    pub argv: Option<String>,
+    /// Exit code (None if still running).
+    pub exit_code: Option<i32>,
+    /// Whether this child has any captured I/O data.
+    pub has_io: bool,
+}
+
+/// Compact summary of a parent process, shown in a child's detail panel.
+#[derive(Debug, Clone, Serialize)]
+pub struct ParentProcess {
+    /// Database event ID (for linking/navigation).
+    pub id: i64,
+    /// Parent's comm name.
+    pub comm: Option<String>,
+    /// Parent's executable path.
+    pub filename: Option<String>,
+    /// Parent's arguments as JSON array string.
+    pub argv: Option<String>,
 }

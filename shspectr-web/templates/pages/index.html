@@ -132,7 +132,8 @@
         <div class="text-sm text-gray-300 space-y-1 mb-4">
             <div><span class="font-mono text-blue-400">keyword:value</span> — filter by exact match or pattern</div>
             <div><span class="font-mono text-red-400">!keyword:value</span> — negate (exclude matches)</div>
-            <div><span class="font-mono text-gray-400">* ? </span> — glob wildcards for <span class="font-mono">comm:</span> and <span class="font-mono">file:</span></div>
+            <div><span class="font-mono text-gray-400">* ? </span> — glob wildcards for <span class="font-mono">cmd:</span>, <span class="font-mono">comm:</span> and <span class="font-mono">file:</span></div>
+            <div><span class="font-mono text-gray-400">a|b</span> — OR alternatives for <span class="font-mono">cmd:</span>, <span class="font-mono">comm:</span> and <span class="font-mono">file:</span></div>
             <div><span class="text-gray-400">bare words</span> — search across command, filename, and arguments</div>
         </div>
 
@@ -141,6 +142,7 @@
             <div><span class="text-gray-400">user:root comm:bash</span> — bash commands run by root</div>
             <div><span class="text-gray-400">!exit:0</span> — commands with non-zero exit</div>
             <div><span class="text-gray-400">file:/usr/bin/* ppid:1</span> — /usr/bin commands spawned by init</div>
+            <div><span class="text-gray-400">!cmd:git|ps</span> — exclude git and ps commands</div>
         </div>
     </div>
 </div>

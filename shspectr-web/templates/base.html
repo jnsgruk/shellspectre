@@ -61,6 +61,14 @@ function shspectrQueryUrl(base, query) {
 
 function shspectrRequest(query, live) {
     const base = live ? '/api/v1/events/live' : '/api/v1/events';
+    // Sync the browser URL bar so filters persist across refreshes / sharing.
+    const url = new URL(window.location);
+    if (query) {
+        url.searchParams.set('q', query);
+    } else {
+        url.searchParams.delete('q');
+    }
+    window.history.replaceState(null, '', url);
     return shspectrQueryUrl(base, query);
 }
 

@@ -1,10 +1,11 @@
 //! Application page routes.
 
 use askama::Template;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Router, routing::get};
+use serde::Deserialize;
 
 use crate::application::state::AppState;
 use crate::domain::filter::EventFilter;
@@ -25,8 +26,16 @@ struct IndexTemplate {
     filter_keywords: &'static [FilterKeywordMeta],
 }
 
-async fn index(State(state): State<AppState>) -> Response {
-    let filter = EventFilter::default();
+/// Query parameters for the index page.
+#[derive(Debug, Deserialize)]
+struct IndexParams {
+    /// Filter query string.
+    #[serde(default)]
+    q: String,
+}
+
+async fn index(State(state): State<AppState>, Query(params): Query<IndexParams>) -> Response {
+    let filter = EventFilter::parse(&params.q);
     let req = ListRequest::default();
 
     let page = match state.repo.list(&req, &filter) {
@@ -44,7 +53,7 @@ async fn index(State(state): State<AppState>) -> Response {
         styles: STYLES_CSS,
         paginated,
         nav,
-        initial_query: String::new(),
+        initial_query: params.q,
         filter_keywords: shspectr_common::FILTER_KEYWORDS,
     };
 

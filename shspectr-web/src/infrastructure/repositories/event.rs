@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use rusqlite::{OptionalExtension, params};
 
-use crate::domain::event::{EventDetail, EventSummary, IoChunk};
+use crate::domain::event::{ChildProcess, EventDetail, EventSummary, IoChunk, ParentProcess};
 use crate::domain::filter::{EventFilter, FilterValue};
 use crate::domain::listing::{ListRequest, Page};
 use crate::domain::repositories::EventRepository;
@@ -45,6 +45,11 @@ fn add_exact<T: rusqlite::types::ToSql + Clone + 'static>(
 }
 
 /// Add a LIKE condition, respecting negation.
+///
+/// The pattern may contain `|`-separated alternatives (e.g. `git|ps`).
+/// For non-negated filters this produces `(col LIKE A OR col LIKE B)`.
+/// For negated filters: `(col NOT LIKE A AND col NOT LIKE B)` (plus
+/// the nullable `IS NULL` prefix when required).
 fn add_like(
     conditions: &mut Vec<String>,
     params: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
@@ -53,19 +58,44 @@ fn add_like(
     negated: bool,
     nullable: bool,
 ) {
-    let idx = params.len() + 1;
-    if negated {
-        if nullable {
-            conditions.push(format!(
-                "({column} IS NULL OR {column} NOT LIKE ?{idx} ESCAPE '\\')"
-            ));
+    let alternatives: Vec<&str> = pattern.split('|').collect();
+    if alternatives.len() == 1 {
+        // Fast path: single pattern, no alternation.
+        let idx = params.len() + 1;
+        if negated {
+            if nullable {
+                conditions.push(format!(
+                    "({column} IS NULL OR {column} NOT LIKE ?{idx} ESCAPE '\\')"
+                ));
+            } else {
+                conditions.push(format!("{column} NOT LIKE ?{idx} ESCAPE '\\'"));
+            }
         } else {
-            conditions.push(format!("{column} NOT LIKE ?{idx} ESCAPE '\\'"));
+            conditions.push(format!("{column} LIKE ?{idx} ESCAPE '\\'"));
         }
-    } else {
-        conditions.push(format!("{column} LIKE ?{idx} ESCAPE '\\'"));
+        params.push(Box::new(pattern));
+        return;
     }
-    params.push(Box::new(pattern));
+
+    // Multiple alternatives separated by `|`.
+    let mut parts = Vec::with_capacity(alternatives.len());
+    for alt in alternatives {
+        let idx = params.len() + 1;
+        if negated {
+            parts.push(format!("{column} NOT LIKE ?{idx} ESCAPE '\\'"));
+        } else {
+            parts.push(format!("{column} LIKE ?{idx} ESCAPE '\\'"));
+        }
+        params.push(Box::new(alt.to_owned()));
+    }
+
+    let joiner = if negated { " AND " } else { " OR " };
+    let combined = parts.join(joiner);
+    if negated && nullable {
+        conditions.push(format!("({column} IS NULL OR ({combined}))"));
+    } else {
+        conditions.push(format!("({combined})"));
+    }
 }
 
 fn escape_like_pattern(value: &str) -> String {
@@ -151,11 +181,20 @@ fn build_where_clause(filter: &EventFilter) -> (String, Vec<Box<dyn rusqlite::ty
     }
 
     if let Some(ref fv) = filter.cmd {
-        let like_pattern = glob_to_like_pattern(&fv.value);
+        // Match the basename of `filename` (the executed binary path).
+        // Prepend `%/` to each `|`-separated alternative so `cmd:rg`
+        // becomes `LIKE '%/rg'` and `cmd:git|ps` becomes
+        // `(LIKE '%/git' OR LIKE '%/ps')`.
+        let like_pattern = fv
+            .value
+            .split('|')
+            .map(|alt| format!("%/{}", glob_to_like_pattern(alt)))
+            .collect::<Vec<_>>()
+            .join("|");
         add_like(
             &mut conditions,
             &mut params,
-            "comm",
+            "filename",
             like_pattern,
             fv.negated,
             true,
@@ -261,6 +300,66 @@ fn fetch_io_chunks(conn: &rusqlite::Connection, detail: &mut EventDetail) -> Res
     Ok(())
 }
 
+/// Fetch child processes for a given exec event's PID within the same session.
+fn fetch_children(conn: &rusqlite::Connection, detail: &EventDetail) -> Result<Vec<ChildProcess>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT e.id, e.pid, e.comm, e.filename, e.argv, e.exit_code, \
+                    EXISTS(SELECT 1 FROM events io \
+                           WHERE io.session_id = e.session_id AND io.pid = e.pid \
+                             AND io.execution_id = e.execution_id \
+                             AND io.event_type IN ('read', 'write') LIMIT 1) as has_io \
+             FROM events e \
+             WHERE e.session_id = ?1 AND e.ppid = ?2 AND e.event_type = 'exec' \
+             ORDER BY e.id ASC",
+        )
+        .context("failed to prepare children query")?;
+
+    let rows = stmt
+        .query_map(
+            params![detail.summary.session_id, detail.summary.pid],
+            |row| {
+                Ok(ChildProcess {
+                    id: row.get(0)?,
+                    pid: row.get(1)?,
+                    comm: row.get(2)?,
+                    filename: row.get(3)?,
+                    argv: row.get(4)?,
+                    exit_code: row.get(5)?,
+                    has_io: row.get(6)?,
+                })
+            },
+        )
+        .context("failed to query children")?;
+
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .context("failed to map child rows")
+}
+
+/// Fetch the parent process for a given exec event by looking up ppid in the same session.
+fn fetch_parent(
+    conn: &rusqlite::Connection,
+    detail: &EventDetail,
+) -> Result<Option<ParentProcess>> {
+    conn.query_row(
+        "SELECT id, comm, filename, argv \
+         FROM events \
+         WHERE session_id = ?1 AND pid = ?2 AND event_type = 'exec' \
+         ORDER BY id DESC LIMIT 1",
+        params![detail.summary.session_id, detail.summary.ppid],
+        |row| {
+            Ok(ParentProcess {
+                id: row.get(0)?,
+                comm: row.get(1)?,
+                filename: row.get(2)?,
+                argv: row.get(3)?,
+            })
+        },
+    )
+    .optional()
+    .context("failed to query parent process")
+}
+
 impl EventRepository for SqlEventRepository {
     fn list(&self, req: &ListRequest, filter: &EventFilter) -> Result<Page<EventSummary>> {
         let conn = self.pool.get().context("failed to get DB connection")?;
@@ -354,6 +453,8 @@ impl EventRepository for SqlEventRepository {
                     summary,
                     stdin_data: Vec::new(),
                     stdout_data: Vec::new(),
+                    children: Vec::new(),
+                    parent: None,
                 })
             })
             .optional()
@@ -364,6 +465,8 @@ impl EventRepository for SqlEventRepository {
         };
 
         fetch_io_chunks(&conn, &mut detail)?;
+        detail.children = fetch_children(&conn, &detail)?;
+        detail.parent = fetch_parent(&conn, &detail)?;
 
         Ok(Some(detail))
     }

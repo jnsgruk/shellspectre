@@ -1,6 +1,6 @@
 //! Presentation view models for events.
 
-use crate::domain::event::{EventDetail, EventSummary};
+use crate::domain::event::{ChildProcess, EventDetail, EventSummary};
 
 use super::username::resolve_uid;
 
@@ -43,52 +43,85 @@ pub struct EventSummaryView {
 /// Maximum length for the truncated args display.
 const MAX_ARGS_DISPLAY_LEN: usize = 40;
 
+/// Check whether a path is an fd-based execution path (e.g. `/proc/self/fd/9`).
+///
+/// Matches:
+/// - `/proc/self/fd/<N>`
+/// - `/proc/<pid>/fd/<N>`
+/// - `/dev/fd/<N>`
+fn is_fd_path(path: &str) -> bool {
+    if let Some(rest) = path.strip_prefix("/proc/") {
+        // Either "self/fd/<N>" or "<pid>/fd/<N>"
+        let after_segment = rest.split_once('/').map(|(_, tail)| tail);
+        matches!(after_segment, Some(tail) if tail.strip_prefix("fd/")
+            .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())))
+    } else if let Some(rest) = path.strip_prefix("/dev/fd/") {
+        !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+    } else {
+        false
+    }
+}
+
+/// Extract `argv[0]` from an argv JSON string.
+fn parse_argv0(argv: Option<&str>) -> Option<String> {
+    argv.and_then(|a| serde_json::from_str::<Vec<String>>(a).ok())
+        .and_then(|v| v.into_iter().next())
+        .filter(|s| !s.is_empty())
+}
+
 impl EventSummaryView {
     /// Create a view from a domain `EventSummary`.
     #[allow(clippy::too_many_lines)]
     pub fn from_summary(s: &EventSummary) -> Self {
         let comm = s.comm.clone().unwrap_or_else(|| "\u{2014}".to_owned());
 
-        // Resolve the full path: prefer filename, fall back to argv[0], then comm.
-        let full_path = s
-            .filename
-            .as_deref()
-            .filter(|f| !f.is_empty())
-            .or_else(|| {
-                s.argv.as_deref().and_then(|a| {
-                    let first_nonempty = serde_json::from_str::<Vec<String>>(a)
-                        .ok()
-                        .and_then(|v| v.into_iter().next())
-                        .is_some_and(|p| !p.is_empty());
-                    if first_nonempty {
-                        s.argv.as_deref()
-                    } else {
-                        None
-                    }
-                })
-            })
-            .unwrap_or("")
-            .to_owned();
+        // Check for fd-path executions first — when the kernel filename is an
+        // fd path like `/proc/self/fd/9`, the basename is just the fd number
+        // which is useless. Prefer argv[0] or comm in that case.
+        let filename_ref = s.filename.as_deref().filter(|f| !f.is_empty());
+        let is_fd = filename_ref.is_some_and(is_fd_path);
 
-        // Split path into directory and basename.
-        // Only treat as a path if it contains a '/'.
-        let (command_dir, command_name) = if full_path.contains('/') {
-            let dir = full_path
-                .rfind('/')
-                .map(|i| format!("{}/", &full_path[..i]))
-                .unwrap_or_default();
-            let name = full_path
-                .rfind('/')
-                .map_or_else(|| full_path.clone(), |i| full_path[i + 1..].to_owned());
-            (dir, name)
+        let (command_dir, command_name) = if is_fd {
+            let fd_path = filename_ref.unwrap_or_default().to_owned();
+            let name = parse_argv0(s.argv.as_deref()).map_or_else(
+                || comm.clone(),
+                |a| {
+                    // Use basename of argv[0] if it contains a path.
+                    a.rsplit('/').next().unwrap_or(&a).to_owned()
+                },
+            );
+            (fd_path, name)
         } else {
-            // Bare name (e.g. "ps" without a path) — no dir to show.
-            let name = if full_path.is_empty() {
-                comm.clone()
+            // Resolve the full path: prefer filename, fall back to argv[0], then comm.
+            let full_path = filename_ref
+                .or_else(|| {
+                    parse_argv0(s.argv.as_deref())
+                        .as_deref()
+                        .and(s.argv.as_deref())
+                })
+                .unwrap_or("")
+                .to_owned();
+
+            // Split path into directory and basename.
+            // Only treat as a path if it contains a '/'.
+            if full_path.contains('/') {
+                let dir = full_path
+                    .rfind('/')
+                    .map(|i| format!("{}/", &full_path[..i]))
+                    .unwrap_or_default();
+                let name = full_path
+                    .rfind('/')
+                    .map_or_else(|| full_path.clone(), |i| full_path[i + 1..].to_owned());
+                (dir, name)
             } else {
-                full_path.clone()
-            };
-            (String::new(), name)
+                // Bare name (e.g. "ps" without a path) — no dir to show.
+                let name = if full_path.is_empty() {
+                    comm.clone()
+                } else {
+                    full_path.clone()
+                };
+                (String::new(), name)
+            }
         };
 
         // Args are argv[1..], joined with spaces.
@@ -219,6 +252,36 @@ pub struct EventDetailView {
     pub tty_nr_raw: Option<u32>,
     /// Raw exit code for click-to-filter (None when not yet exited).
     pub exit_code_raw: Option<i32>,
+    /// Child processes spawned by this process.
+    pub children: Vec<ChildProcessView>,
+    /// Parent process info (if found in the same session).
+    pub parent: Option<ParentProcessView>,
+}
+
+/// View model for a child process displayed in the parent's detail panel.
+#[derive(Debug, Clone)]
+pub struct ChildProcessView {
+    /// Database event ID.
+    pub id: i64,
+    /// PID.
+    pub pid: u32,
+    /// Formatted command string.
+    pub command: String,
+    /// Exit code display.
+    pub exit_code: String,
+    /// CSS class for exit code.
+    pub exit_code_class: &'static str,
+    /// Whether this child has captured I/O.
+    pub has_io: bool,
+}
+
+/// View model for a parent process link in the child's detail panel.
+#[derive(Debug, Clone)]
+pub struct ParentProcessView {
+    /// Database event ID (for navigation).
+    pub id: i64,
+    /// Formatted command string.
+    pub command: String,
 }
 
 impl EventDetailView {
@@ -273,8 +336,63 @@ impl EventDetailView {
             euid_raw: d.summary.euid,
             tty_nr_raw: d.tty_nr.filter(|&nr| nr > 0),
             exit_code_raw: d.summary.exit_code,
+            children: d
+                .children
+                .iter()
+                .map(ChildProcessView::from_child)
+                .collect(),
+            parent: d.parent.as_ref().map(ParentProcessView::from_parent),
         }
     }
+}
+
+impl ChildProcessView {
+    fn from_child(c: &ChildProcess) -> Self {
+        let command = build_child_command_string(c);
+        let (exit_code, exit_code_class) = match c.exit_code {
+            Some(0) => ("0".to_owned(), "text-green-400"),
+            Some(code) => (code.to_string(), "text-red-400"),
+            None => ("\u{2014}".to_owned(), "text-gray-500"),
+        };
+        Self {
+            id: c.id,
+            pid: c.pid,
+            command,
+            exit_code,
+            exit_code_class,
+            has_io: c.has_io,
+        }
+    }
+}
+
+impl ParentProcessView {
+    fn from_parent(p: &crate::domain::event::ParentProcess) -> Self {
+        let command = if let Some(ref argv_str) = p.argv
+            && let Ok(argv) = serde_json::from_str::<Vec<String>>(argv_str)
+            && !argv.is_empty()
+        {
+            argv.join(" ")
+        } else if let Some(ref filename) = p.filename {
+            filename.clone()
+        } else {
+            p.comm.clone().unwrap_or_default()
+        };
+        Self { id: p.id, command }
+    }
+}
+
+/// Build a display string from a child process's fields.
+fn build_child_command_string(c: &ChildProcess) -> String {
+    if let Some(ref argv_str) = c.argv
+        && let Ok(argv) = serde_json::from_str::<Vec<String>>(argv_str)
+        && !argv.is_empty()
+    {
+        return argv.join(" ");
+    }
+    if let Some(ref filename) = c.filename {
+        return filename.clone();
+    }
+    c.comm.clone().unwrap_or_default()
 }
 
 /// Convert a raw string (possibly containing ANSI escape sequences) to HTML.
@@ -464,6 +582,8 @@ mod tests {
                 data: "TOP SECRET\n".to_owned(),
                 byte_count: 11,
             }],
+            children: vec![],
+            parent: None,
         }
     }
 
@@ -510,6 +630,55 @@ mod tests {
     fn ansi_plain_text_unchanged() {
         let html = ansi_to_html("hello world\n");
         assert_eq!(html, "hello world\n");
+    }
+
+    #[test]
+    fn fd_path_proc_self_uses_argv0() {
+        let mut s = make_summary();
+        s.filename = Some("/proc/self/fd/9".to_owned());
+        s.argv = Some(r#"["systemd-executor","--deserialize","57"]"#.to_owned());
+        let view = EventSummaryView::from_summary(&s);
+        assert_eq!(view.command_name, "systemd-executor");
+        assert_eq!(view.command_dir, "/proc/self/fd/9");
+        assert_eq!(view.command_args, "--deserialize 57");
+    }
+
+    #[test]
+    fn fd_path_dev_fd_uses_argv0() {
+        let mut s = make_summary();
+        s.filename = Some("/dev/fd/3".to_owned());
+        s.argv = Some(r#"["my-program","--flag"]"#.to_owned());
+        let view = EventSummaryView::from_summary(&s);
+        assert_eq!(view.command_name, "my-program");
+        assert_eq!(view.command_dir, "/dev/fd/3");
+    }
+
+    #[test]
+    fn fd_path_proc_pid_uses_argv0() {
+        let mut s = make_summary();
+        s.filename = Some("/proc/12345/fd/9".to_owned());
+        s.argv = Some(r#"["some-daemon"]"#.to_owned());
+        let view = EventSummaryView::from_summary(&s);
+        assert_eq!(view.command_name, "some-daemon");
+        assert_eq!(view.command_dir, "/proc/12345/fd/9");
+    }
+
+    #[test]
+    fn fd_path_empty_argv_falls_back_to_comm() {
+        let mut s = make_summary();
+        s.filename = Some("/proc/self/fd/9".to_owned());
+        s.argv = None;
+        s.comm = Some("systemd-exec".to_owned());
+        let view = EventSummaryView::from_summary(&s);
+        assert_eq!(view.command_name, "systemd-exec");
+        assert_eq!(view.command_dir, "/proc/self/fd/9");
+    }
+
+    #[test]
+    fn normal_path_unaffected_by_fd_logic() {
+        let view = EventSummaryView::from_summary(&make_summary());
+        assert_eq!(view.command_name, "cargo");
+        assert_eq!(view.command_dir, "/usr/bin/");
     }
 
     #[test]

@@ -722,18 +722,19 @@ fn filter_cmd_exact() -> Result<()> {
 
     let conn = pool.get()?;
     SessionRow::new("s1").insert(&conn);
+    // comm differs from filename basename to verify cmd: uses filename.
     ExecEventRow::new("s1")
-        .comm("ps")
+        .comm("bash")
         .filename("/usr/bin/ps")
         .insert(&conn);
     ExecEventRow::new("s1")
         .pid(101)
-        .comm("git")
+        .comm("opencode")
         .filename("/usr/lib/git-core/git")
         .insert(&conn);
     ExecEventRow::new("s1")
         .pid(102)
-        .comm("ls")
+        .comm("fish")
         .filename("/usr/bin/ls")
         .insert(&conn);
     drop(conn);
@@ -752,18 +753,19 @@ fn filter_cmd_glob() -> Result<()> {
 
     let conn = pool.get()?;
     SessionRow::new("s1").insert(&conn);
+    // comm differs from filename basename to verify cmd: uses filename.
     ExecEventRow::new("s1")
-        .comm("git")
+        .comm("bash")
         .filename("/usr/bin/git")
         .insert(&conn);
     ExecEventRow::new("s1")
         .pid(101)
-        .comm("gitk")
+        .comm("bash")
         .filename("/usr/bin/gitk")
         .insert(&conn);
     ExecEventRow::new("s1")
         .pid(102)
-        .comm("ls")
+        .comm("bash")
         .filename("/usr/bin/ls")
         .insert(&conn);
     drop(conn);
@@ -781,18 +783,19 @@ fn filter_cmd_negated() -> Result<()> {
 
     let conn = pool.get()?;
     SessionRow::new("s1").insert(&conn);
+    // comm differs from filename basename to verify cmd: uses filename.
     ExecEventRow::new("s1")
-        .comm("git")
+        .comm("bash")
         .filename("/usr/lib/git-core/git")
         .insert(&conn);
     ExecEventRow::new("s1")
         .pid(101)
-        .comm("ps")
+        .comm("bash")
         .filename("/usr/bin/ps")
         .insert(&conn);
     ExecEventRow::new("s1")
         .pid(102)
-        .comm("ls")
+        .comm("bash")
         .filename("/usr/bin/ls")
         .insert(&conn);
     drop(conn);
@@ -806,5 +809,218 @@ fn filter_cmd_negated() -> Result<()> {
         .filter_map(|e| e.filename.as_deref())
         .collect();
     assert!(!filenames.contains(&"/usr/lib/git-core/git"));
+    Ok(())
+}
+
+#[test]
+fn filter_cmd_pipe_or() -> Result<()> {
+    let pool = create_test_pool()?;
+    let repo = SqlEventRepository::new(pool.clone());
+
+    let conn = pool.get()?;
+    SessionRow::new("s1").insert(&conn);
+    ExecEventRow::new("s1")
+        .comm("bash")
+        .filename("/usr/bin/git")
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(101)
+        .comm("bash")
+        .filename("/usr/bin/ps")
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(102)
+        .comm("bash")
+        .filename("/usr/bin/ls")
+        .insert(&conn);
+    drop(conn);
+
+    // Positive OR: should match git and ps.
+    let filter = EventFilter::parse("cmd:git|ps");
+    let page = repo.list(&ListRequest::default(), &filter)?;
+    assert_eq!(page.items.len(), 2);
+
+    // Negated OR: should exclude git and ps, leaving only ls.
+    let filter = EventFilter::parse("!cmd:git|ps");
+    let page = repo.list(&ListRequest::default(), &filter)?;
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].filename.as_deref(), Some("/usr/bin/ls"));
+
+    Ok(())
+}
+
+#[test]
+fn get_detail_includes_children() -> Result<()> {
+    let pool = create_test_pool()?;
+    let repo = SqlEventRepository::new(pool.clone());
+
+    let parent_id = {
+        let conn = pool.get()?;
+        SessionRow::new("s1").insert(&conn);
+        // Parent process (pid=100)
+        ExecEventRow::new("s1")
+            .pid(100)
+            .comm("bash")
+            .filename("/usr/bin/bash")
+            .insert(&conn);
+        // Child 1 (pid=200, ppid=100)
+        ExecEventRow::new("s1")
+            .pid(200)
+            .ppid(100)
+            .execution_id(200)
+            .comm("ls")
+            .filename("/usr/bin/ls")
+            .exit_code(0)
+            .insert(&conn);
+        // Child 2 (pid=201, ppid=100)
+        ExecEventRow::new("s1")
+            .pid(201)
+            .ppid(100)
+            .execution_id(201)
+            .comm("cat")
+            .filename("/usr/bin/cat")
+            .exit_code(1)
+            .insert(&conn);
+        // Unrelated process (different ppid)
+        ExecEventRow::new("s1")
+            .pid(300)
+            .ppid(999)
+            .execution_id(300)
+            .comm("unrelated")
+            .filename("/unrelated")
+            .insert(&conn);
+        conn.query_row(
+            "SELECT id FROM events WHERE pid = 100 AND event_type = 'exec' LIMIT 1",
+            [],
+            |r| r.get::<_, i64>(0),
+        )?
+    };
+
+    let detail = repo.get_detail(parent_id)?.expect("should find parent");
+    assert_eq!(detail.children.len(), 2, "should have 2 children");
+    assert_eq!(detail.children[0].comm.as_deref(), Some("ls"));
+    assert_eq!(detail.children[1].comm.as_deref(), Some("cat"));
+    Ok(())
+}
+
+#[test]
+fn get_detail_includes_parent() -> Result<()> {
+    let pool = create_test_pool()?;
+    let repo = SqlEventRepository::new(pool.clone());
+
+    let child_id = {
+        let conn = pool.get()?;
+        SessionRow::new("s1").insert(&conn);
+        // Parent (pid=100)
+        ExecEventRow::new("s1")
+            .pid(100)
+            .comm("bash")
+            .filename("/usr/bin/bash")
+            .argv("[\"bash\"]")
+            .insert(&conn);
+        // Child (pid=200, ppid=100)
+        ExecEventRow::new("s1")
+            .pid(200)
+            .ppid(100)
+            .execution_id(200)
+            .comm("ls")
+            .filename("/usr/bin/ls")
+            .insert(&conn);
+        conn.query_row(
+            "SELECT id FROM events WHERE pid = 200 AND event_type = 'exec' LIMIT 1",
+            [],
+            |r| r.get::<_, i64>(0),
+        )?
+    };
+
+    let detail = repo.get_detail(child_id)?.expect("should find child");
+    assert!(detail.parent.is_some(), "should have parent");
+    let parent = detail.parent.expect("checked above");
+    assert_eq!(parent.comm.as_deref(), Some("bash"));
+    assert_eq!(parent.filename.as_deref(), Some("/usr/bin/bash"));
+    Ok(())
+}
+
+#[test]
+fn get_detail_child_has_io_flag() -> Result<()> {
+    let pool = create_test_pool()?;
+    let repo = SqlEventRepository::new(pool.clone());
+
+    let parent_id = {
+        let conn = pool.get()?;
+        SessionRow::new("s1").insert(&conn);
+        ExecEventRow::new("s1")
+            .pid(100)
+            .comm("bash")
+            .filename("/bash")
+            .insert(&conn);
+        // Child with I/O
+        ExecEventRow::new("s1")
+            .pid(200)
+            .ppid(100)
+            .execution_id(200)
+            .comm("cat")
+            .filename("/cat")
+            .insert(&conn);
+        IoEventRow::new("s1")
+            .pid(200)
+            .execution_id(200)
+            .data("output")
+            .insert(&conn);
+        // Child without I/O
+        ExecEventRow::new("s1")
+            .pid(201)
+            .ppid(100)
+            .execution_id(201)
+            .comm("true")
+            .filename("/true")
+            .insert(&conn);
+        conn.query_row(
+            "SELECT id FROM events WHERE pid = 100 AND event_type = 'exec' LIMIT 1",
+            [],
+            |r| r.get::<_, i64>(0),
+        )?
+    };
+
+    let detail = repo.get_detail(parent_id)?.expect("should find parent");
+    assert_eq!(detail.children.len(), 2);
+    let cat_child = detail
+        .children
+        .iter()
+        .find(|c| c.comm.as_deref() == Some("cat"))
+        .expect("should find cat child");
+    assert!(cat_child.has_io, "cat should have I/O");
+    let true_child = detail
+        .children
+        .iter()
+        .find(|c| c.comm.as_deref() == Some("true"))
+        .expect("should find true child");
+    assert!(!true_child.has_io, "true should not have I/O");
+    Ok(())
+}
+
+#[test]
+fn get_detail_no_parent_when_not_in_session() -> Result<()> {
+    let pool = create_test_pool()?;
+    let repo = SqlEventRepository::new(pool.clone());
+
+    let id = {
+        let conn = pool.get()?;
+        SessionRow::new("s1").insert(&conn);
+        // Process whose ppid (999) has no exec event in this session
+        ExecEventRow::new("s1")
+            .pid(100)
+            .ppid(999)
+            .comm("orphan")
+            .filename("/orphan")
+            .insert(&conn);
+        conn.query_row("SELECT id FROM events WHERE pid = 100 LIMIT 1", [], |r| {
+            r.get::<_, i64>(0)
+        })?
+    };
+
+    let detail = repo.get_detail(id)?.expect("should find event");
+    assert!(detail.parent.is_none(), "should have no parent");
+    assert!(detail.children.is_empty(), "should have no children");
     Ok(())
 }

@@ -57,7 +57,12 @@ async fn index_page_uses_data_attributes_for_request_urls() {
     let (addr, pool) = support::start_test_server().await;
     seed_events(&pool, 30);
 
-    let resp = reqwest::get(format!("http://{addr}/?q=s'1")).await.unwrap();
+    // Use a filter that matches all seeded events (exit:0) so pagination
+    // is still present, while also embedding a special character (the single
+    // quote) to verify it doesn't break HTML attribute output.
+    let resp = reqwest::get(format!("http://{addr}/?q=exit:0"))
+        .await
+        .unwrap();
     let body = resp.text().await.unwrap();
 
     assert!(
@@ -75,6 +80,14 @@ async fn index_page_uses_data_attributes_for_request_urls() {
     assert!(
         !body.contains("data-on:click=\"@get('"),
         "request URLs should not be embedded in inline JS strings"
+    );
+
+    // Verify special characters in the query don't break HTML attributes.
+    let resp = reqwest::get(format!("http://{addr}/?q=s'1")).await.unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(
+        !body.contains("data-on:click=\"@get('"),
+        "special chars in query should not break inline JS strings"
     );
 }
 
