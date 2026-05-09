@@ -7,6 +7,7 @@ mod ebpf;
 mod event;
 mod filter;
 mod handler;
+mod otel_sink;
 mod session;
 mod sink;
 mod sqlite_sink;
@@ -22,6 +23,8 @@ enum OutputSink {
     Stdout,
     /// Write events to a SQLite database.
     Sqlite,
+    /// Export events as OTLP logs to an OpenTelemetry collector.
+    Otel,
 }
 
 #[derive(Debug, Parser)]
@@ -33,12 +36,15 @@ struct Cli {
     /// Only capture descendants of named processes (comma-separated)
     #[arg(long, value_delimiter = ',')]
     filter_ancestor: Vec<String>,
-    /// Output sink: stdout or sqlite (default: stdout)
+    /// Output sink: stdout, sqlite, or otel (default: stdout)
     #[arg(long, default_value = "stdout")]
     output: OutputSink,
     /// SQLite database path (for sqlite output)
     #[arg(long, default_value = "shspectr.db")]
     db_path: String,
+    /// OTLP endpoint URL (for otel output, default: http://localhost:4318)
+    #[arg(long, default_value = "http://localhost:4318")]
+    otel_endpoint: String,
     /// Also start the web UI server (requires --output sqlite)
     #[cfg(feature = "web")]
     #[arg(long)]
@@ -72,6 +78,7 @@ fn main() -> Result<()> {
     let sink: Box<dyn sink::Sink> = match cli.output {
         OutputSink::Stdout => Box::new(stdout_sink::StdoutSink),
         OutputSink::Sqlite => Box::new(sqlite_sink::SqliteSink::open(&cli.db_path)?),
+        OutputSink::Otel => Box::new(otel_sink::OtelSink::new(&cli.otel_endpoint)?),
     };
 
     #[cfg(feature = "web")]

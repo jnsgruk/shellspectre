@@ -27,6 +27,7 @@
 │  │    -> Session Correlator (session.rs)│   │
 │  │    -> Filter Engine (filter.rs)      │   │
 │  │    -> SQLite Sink (sqlite_sink.rs)   │   │
+│  │    -> OTel Sink (otel_sink.rs)      │   │
 │  └──────────────────────────────────────┘   │
 │                 │                            │
 │                 ▼                            │
@@ -101,6 +102,7 @@ Key modules:
 | `handler.rs` | Event dispatching: routes parsed events to session correlator, filters, and sinks |
 | `sink.rs` | `Sink` trait definition (`on_exec`, `on_exit`, `on_io`) |
 | `stdout_sink.rs` | Structured JSON output via tracing for stdout sink mode |
+| `otel_sink.rs` | Exports events as OTLP logs over HTTP to a configurable endpoint (`--otel-endpoint`). I/O data is base64-encoded. |
 
 Belongs here: eBPF lifecycle management, event consumption, session logic, sink implementations, CLI definition.
 Does not belong here: `#[repr(C)]` event definitions (those go in `shspectr-common`), web UI code.
@@ -125,7 +127,7 @@ infrastructure/ SQLite repository implementations
 
 Search DSL supports field filters: `user:root comm:bash* !exit:0 pid:123`
 
-### tests/system — System Tests
+### tests/ — System Tests
 
 Role: end-to-end validation with real eBPF in LXD VMs.
 
@@ -146,7 +148,7 @@ shspectr-ebpf ──> shspectr-common (no_std, default features)
 shspectr-web ──> shspectr-common (std feature)
              ──> (reads shspectr's SQLite DB directly)
 
-tests/system ──> (black-box; runs shspectr binary in VM)
+tests/ ──> (black-box; runs shspectr binary in VM)
 ```
 
 ## Event Pipeline Detail
@@ -169,7 +171,7 @@ tests/system ──> (black-box; runs shspectr binary in VM)
 
 9. **Filtering.** The filter engine evaluates OR-composed predicates. An event passes if any filter matches (e.g., has a PTY, or is a descendant of a configured ancestor process).
 
-10. **Sink.** The SQLite sink creates or migrates the collector-owned database, writes to `sessions` and `events` in WAL mode, stores `execution_id` on every row, and only sets `sessions.ended_at` when the final non-PTY process in a session exits.
+10. **Sink.** The SQLite sink creates or migrates the collector-owned database, writes to `sessions` and `events` in WAL mode, stores `execution_id` on every row, and only sets `sessions.ended_at` when the final non-PTY process in a session exits. The OTel sink (`--output otel`) serializes events as OTLP log records and POSTs them over HTTP to `--otel-endpoint`. I/O event data is truncated to 4 KiB and base64-encoded before export.
 
 ## Session Correlation
 

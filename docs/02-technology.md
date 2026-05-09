@@ -13,6 +13,7 @@
 | Async runtime | tokio | Ring buffer consumption + web server |
 | Logging | tracing + tracing-subscriber | Structured JSON output |
 | Storage | SQLite (rusqlite, bundled) | WAL mode, sessions + events tables |
+| OTel export | OTLP/HTTP (opentelemetry-otlp) | `--output otel --otel-endpoint URL`; logs format, no traces dependency |
 | Web framework | axum | Async HTTP with tower middleware |
 | Templates | askama | Compile-time checked HTML templates |
 | Frontend | Datastar v1 + Tailwind CSS v4 | Hypermedia/SSE, no JS framework |
@@ -56,5 +57,6 @@
 
 - Argv: 20 args x 256 bytes each (BPF instruction budget).
 - I/O data: 4KB per event (configurable).
+- OTel sink: I/O event data is truncated to 4 KiB and base64-encoded, so binary payloads survive transport but large outputs are lossy.
 - Ring buffer: 256KB — high event volume can cause drops (kernel increments lost count).
 - File length: 1000 lines max (guidance).

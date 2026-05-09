@@ -12,6 +12,10 @@ serde_json = "1"
 tokio = { version = "1" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+base64 = "0.22"
+opentelemetry = "0.32"
+opentelemetry_sdk = { version = "0.32", features = ["logs"] }
+opentelemetry-otlp = { version = "0.32", features = ["logs", "http-proto"] }
 
 [workspace.lints.clippy]
 # Enable pedantic + cargo groups

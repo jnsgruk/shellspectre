@@ -24,6 +24,7 @@ shspectr/                  # Workspace root
 ├── shspectr-ebpf/         #   eBPF probe programs (Rust nightly, #![no_std])
 ├── shspectr-common/       #   Shared event types (kernel + userspace, #![no_std], #[repr(C)])
 ├── shspectr-web/          #   Web UI for session browsing (axum + askama + Tailwind + Datastar)
+├── otel-demo/             #   Docker Compose stack for local OTel visualization (Loki + Grafana)
 ├── tests/                 #   End-to-end tests via spread + LXD
 ├── docs/                  #   Architecture and decision documentation
 ├── plans/                 #   Implementation plans (git-ignored)
