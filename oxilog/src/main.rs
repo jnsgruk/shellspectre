@@ -9,6 +9,7 @@ use tracing_subscriber::{EnvFilter, fmt};
 
 mod btf;
 mod event;
+mod session;
 
 #[derive(Debug, Parser)]
 #[command(name = "oxilog", about = "Passive Linux session recorder")]
@@ -141,6 +142,7 @@ fn run(filter_pty: bool) -> Result<()> {
 
 async fn consume_events(mut ring_buf: RingBuf<aya::maps::MapData>) -> Result<()> {
     let async_fd = AsyncFd::new(ring_buf.as_raw_fd())?;
+    let mut correlator = session::SessionCorrelator::new();
 
     info!("consuming events from ring buffer");
 
@@ -150,81 +152,115 @@ async fn consume_events(mut ring_buf: RingBuf<aya::maps::MapData>) -> Result<()>
 
         // Drain all available events.
         while let Some(item) = ring_buf.next() {
-            handle_event(&item);
+            handle_event(&item, &mut correlator);
         }
 
         guard.clear_ready();
     }
 }
 
-fn handle_event(data: &[u8]) {
+fn handle_event(data: &[u8], correlator: &mut session::SessionCorrelator) {
     let Some(header) = event::parse_header(data) else {
         tracing::warn!(len = data.len(), "event too short, skipping");
         return;
     };
 
     match header.event_type {
-        EventType::Exec => {
-            if let Some(exec) = event::parse_exec_event(data) {
-                info!(
-                    event = "exec",
-                    pid = exec.pid,
-                    ppid = exec.ppid,
-                    uid = exec.uid,
-                    gid = exec.gid,
-                    euid = exec.euid,
-                    comm = %exec.comm,
-                    tty_nr = exec.tty_nr,
-                    cgroup_id = exec.cgroup_id,
-                    filename = %exec.filename,
-                    argv = ?exec.argv,
-                    retval = exec.retval,
-                );
-            } else {
-                tracing::warn!("exec event too short");
-            }
-        }
-        EventType::Exit => {
-            if let Some(exit) = event::parse_exit_event(data) {
-                info!(
-                    event = "exit",
-                    pid = exit.pid,
-                    ppid = exit.ppid,
-                    uid = exit.uid,
-                    gid = exit.gid,
-                    euid = exit.euid,
-                    comm = %exit.comm,
-                    tty_nr = exit.tty_nr,
-                    cgroup_id = exit.cgroup_id,
-                    exit_code = exit.exit_code,
-                );
-            } else {
-                tracing::warn!("exit event too short");
-            }
-        }
+        EventType::Exec => handle_exec_event(data, correlator),
+        EventType::Exit => handle_exit_event(data, correlator),
         EventType::Read | EventType::Write => {
-            if let Some(io) = event::parse_io_event(data) {
-                let data_str = String::from_utf8_lossy(&io.data);
-                info!(
-                    event = if header.event_type == EventType::Read { "read" } else { "write" },
-                    pid = io.pid,
-                    ppid = io.ppid,
-                    uid = io.uid,
-                    gid = io.gid,
-                    euid = io.euid,
-                    comm = %io.comm,
-                    tty_nr = io.tty_nr,
-                    cgroup_id = io.cgroup_id,
-                    fd = io.fd,
-                    data_len = io.data.len(),
-                    count = io.count,
-                    data = %data_str,
-                );
-            } else {
-                tracing::warn!("io event too short");
-            }
+            handle_io_event(data, correlator, header.event_type);
         }
     }
+}
+
+fn handle_exec_event(data: &[u8], correlator: &mut session::SessionCorrelator) {
+    let Some(exec) = event::parse_exec_event(data) else {
+        tracing::warn!("exec event too short");
+        return;
+    };
+    let event_info = session::EventInfo {
+        pid: exec.pid,
+        ppid: exec.ppid,
+        tty_nr: exec.tty_nr,
+    };
+    let session_id = correlator.on_exec(&event_info).to_string();
+    info!(
+        event = "exec",
+        session_id = %session_id,
+        pid = exec.pid,
+        ppid = exec.ppid,
+        uid = exec.uid,
+        gid = exec.gid,
+        euid = exec.euid,
+        comm = %exec.comm,
+        tty_nr = exec.tty_nr,
+        cgroup_id = exec.cgroup_id,
+        filename = %exec.filename,
+        argv = ?exec.argv,
+        retval = exec.retval,
+    );
+}
+
+fn handle_exit_event(data: &[u8], correlator: &mut session::SessionCorrelator) {
+    let Some(exit) = event::parse_exit_event(data) else {
+        tracing::warn!("exit event too short");
+        return;
+    };
+    let event_info = session::EventInfo {
+        pid: exit.pid,
+        ppid: exit.ppid,
+        tty_nr: exit.tty_nr,
+    };
+    let session_id = correlator.session_for(&event_info).to_string();
+    correlator.on_exit(exit.pid);
+    info!(
+        event = "exit",
+        session_id = %session_id,
+        pid = exit.pid,
+        ppid = exit.ppid,
+        uid = exit.uid,
+        gid = exit.gid,
+        euid = exit.euid,
+        comm = %exit.comm,
+        tty_nr = exit.tty_nr,
+        cgroup_id = exit.cgroup_id,
+        exit_code = exit.exit_code,
+    );
+}
+
+fn handle_io_event(
+    data: &[u8],
+    correlator: &mut session::SessionCorrelator,
+    event_type: EventType,
+) {
+    let Some(io) = event::parse_io_event(data) else {
+        tracing::warn!("io event too short");
+        return;
+    };
+    let event_info = session::EventInfo {
+        pid: io.pid,
+        ppid: io.ppid,
+        tty_nr: io.tty_nr,
+    };
+    let session_id = correlator.session_for(&event_info).to_string();
+    let data_str = String::from_utf8_lossy(&io.data);
+    info!(
+        event = if event_type == EventType::Read { "read" } else { "write" },
+        session_id = %session_id,
+        pid = io.pid,
+        ppid = io.ppid,
+        uid = io.uid,
+        gid = io.gid,
+        euid = io.euid,
+        comm = %io.comm,
+        tty_nr = io.tty_nr,
+        cgroup_id = io.cgroup_id,
+        fd = io.fd,
+        data_len = io.data.len(),
+        count = io.count,
+        data = %data_str,
+    );
 }
 
 #[allow(clippy::print_stdout)]

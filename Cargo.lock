@@ -492,6 +492,7 @@ dependencies = [
  "anyhow",
  "openssh",
  "rand",
+ "serde_json",
  "tempfile",
  "tokio",
 ]
