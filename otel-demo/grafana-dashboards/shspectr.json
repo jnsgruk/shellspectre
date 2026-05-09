@@ -1,0 +1,288 @@
+{
+  "uid": "shspectr-overview",
+  "title": "ShellSpectre Overview",
+  "description": "Session recording overview for security auditing",
+  "tags": ["shspectr"],
+  "timezone": "browser",
+  "editable": true,
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "10s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Commands",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 5, "x": 0, "y": 0 },
+      "datasource": { "type": "loki", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum(count_over_time({service_name=\"shspectr\"} |= \"exec\" [$__range]))",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "blue" },
+          "noValue": "0"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Sessions",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 5, "x": 5, "y": 0 },
+      "datasource": { "type": "loki", "uid": "" },
+      "targets": [
+        {
+          "expr": "count(sum by (session_id) (count_over_time({service_name=\"shspectr\"} |= \"exec\" [$__range])))",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "blue" },
+          "noValue": "0"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Unique Users",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 5, "x": 10, "y": 0 },
+      "datasource": { "type": "loki", "uid": "" },
+      "targets": [
+        {
+          "expr": "count(sum by (session_uid) (count_over_time({service_name=\"shspectr\"} |= \"exec\" [$__range])))",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "blue" },
+          "noValue": "0"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Failed Commands",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 5, "x": 15, "y": 0 },
+      "datasource": { "type": "loki", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum(count_over_time({service_name=\"shspectr\", retval!=\"0\"} |= \"exec\" [$__range]))",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "red" },
+          "noValue": "0"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Root Activity (uid=0)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "datasource": { "type": "loki", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum(count_over_time({service_name=\"shspectr\", uid=\"0\"} |= \"exec\" [$__range]))",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "orange" },
+          "noValue": "0"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Commands Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 4 },
+      "datasource": { "type": "loki", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum(count_over_time({service_name=\"shspectr\"} |= \"exec\" [$__auto]))",
+          "legendFormat": "commands",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "hidden" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "blue" },
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "drawStyle": "line",
+            "gradientMode": "scheme",
+            "spanNulls": false
+          },
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Top 10 Most Used Commands",
+      "type": "bargauge",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+      "datasource": { "type": "loki", "uid": "" },
+      "targets": [
+        {
+          "expr": "topk(10, sum by (filename) (count_over_time({service_name=\"shspectr\"} |= \"exec\" [$__range])))",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        },
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "showUnfilled": true,
+        "minVizWidth": 0,
+        "minVizHeight": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "continuous-blues" }
+        }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Command Log",
+      "type": "table",
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 20 },
+      "datasource": { "type": "loki", "uid": "" },
+      "targets": [
+        {
+          "expr": "{service_name=\"shspectr\"} |= \"exec\"",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          { "displayName": "Time", "desc": true }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "extractFields",
+          "options": {
+            "source": "labels"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "id": true,
+              "tsNs": true,
+              "cgroup_id": true,
+              "comm": true,
+              "detected_level": true,
+              "euid": true,
+              "execution_id": true,
+              "gid": true,
+              "host_name": true,
+              "pid": true,
+              "ppid": true,
+              "scope_name": true,
+              "service_name": true,
+              "session_cgroup_id": true,
+              "session_comm": true,
+              "session_euid": true,
+              "session_pid": true,
+              "session_tty_nr": true,
+              "severity_number": true,
+              "telemetry_sdk_language": true,
+              "telemetry_sdk_name": true,
+              "telemetry_sdk_version": true,
+              "tty_nr": true,
+              "uid": true,
+              "filename": true,
+              "Line": true,
+              "labels": true,
+              "body": true
+            },
+            "indexByName": {
+              "Time": 0,
+              "session_uid": 1,
+              "argv": 2,
+              "retval": 3,
+              "session_id": 4
+            },
+            "renameByName": {
+              "Time": "Timestamp",
+              "session_uid": "User (UID)",
+              "argv": "Command",
+              "retval": "Return Value",
+              "session_id": "Session"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "version": 1
+}

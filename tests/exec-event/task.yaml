@@ -3,5 +3,5 @@ execute: |
   ls /tmp
 
   sqlite3 "$DB_PATH" \
-    "SELECT filename FROM events WHERE event_type = 'exec'" \
+    "SELECT filename FROM events WHERE event_type = 0" \
     | MATCH ls

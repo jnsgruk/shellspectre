@@ -31,7 +31,12 @@ shspectr/src/
 ├── event.rs          # Raw [u8] → parsed event types
 ├── filter.rs         # Composable PTY/ancestor filters
 ├── session.rs        # Session correlator (pid → session_id)
-└── sqlite_sink.rs    # SQLite writer (WAL mode)
+├── sink.rs           # Sink trait (on_exec, on_exit, on_io)
+├── sqlite_sink.rs    # SQLite writer (WAL mode)
+├── ebpf.rs           # eBPF program loading, capability checks, ring buffer loop
+├── handler.rs        # Event dispatching to correlator, filters, sinks
+├── stdout_sink.rs    # Structured JSON output via tracing
+└── otel_sink.rs      # OTLP/HTTP log exporter (--output otel)
 ```
 
 Each file owns a single concern. At current size this is at the Tier 1–2 boundary (see [When to Add Structure](#when-to-add-structure)).

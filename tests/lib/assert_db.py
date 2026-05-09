@@ -35,7 +35,7 @@ def main():
             assert r[0] >= 1, f"expected rows in {table}, got {r[0]}"
         r = conn.execute(
             "SELECT COUNT(*) FROM events "
-            "WHERE event_type = 'exec' AND execution_id = 0"
+            "WHERE event_type = 0 AND execution_id = 0"
         ).fetchone()
         assert r[0] == 0, f"found {r[0]} exec events with execution_id=0"
         r = conn.execute(
@@ -57,7 +57,7 @@ def main():
         filename, expected = sys.argv[2], int(sys.argv[3])
         r = conn.execute(
             "SELECT exit_code FROM events "
-            "WHERE event_type = 'exec' AND filename = ? "
+            "WHERE event_type = 0 AND filename = ? "
             "ORDER BY id DESC LIMIT 1",
             (filename,),
         ).fetchone()

@@ -6,6 +6,6 @@ execute: |
   # All exec events from PTY should have tty_nr != 0
   zero_tty=$(sqlite3 "$DB_PATH" \
     "SELECT COUNT(*) FROM events
-     WHERE event_type = 'exec' AND tty_nr = 0
+     WHERE event_type = 0 AND tty_nr = 0
      AND comm = 'ls'")
   test "$zero_tty" -eq 0

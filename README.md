@@ -24,6 +24,7 @@ Nothing is injected into monitored processes. No shells are wrapped. No LD_PRELO
 | eBPF framework | [aya-rs](https://aya-rs.dev/) — pure Rust, no libbpf or C dependency |
 | Userspace | Rust (edition 2024), tokio, clap |
 | Storage | SQLite in WAL mode (concurrent reads while recording) |
+| OTel export | OTLP/HTTP via `opentelemetry-otlp` — logs format, no traces dependency |
 | Web | axum + askama templates + [Datastar](https://data-star.dev/) (SSE-driven, no JS framework) |
 | Styling | Tailwind CSS v4 |
 | Build tooling | mise, mold linker, prek (pre-commit) |
@@ -37,18 +38,19 @@ Kernel (7 eBPF tracepoints)
   │
   ▼  RingBuf (lock-free)
 Userspace daemon (shspectr)
-  │  Event correlation → Session grouping → Filters → SQLite
+  │  Event correlation → Session grouping → Filters
   │
-  ▼  SQLite (WAL)
-Web UI (shspectr-web)
-     axum + SSE → browser
+  ├──▶ SQLite (WAL) ──▶ Web UI (shspectr-web)
+  │                       axum + SSE → browser
+  │
+  └──▶ OTel (OTLP/HTTP) ──▶ Collector → Loki/Grafana
 ```
 
 The project is split into four crates:
 
 - **shspectr-common** — `#![no_std]` shared types (`#[repr(C)]` event structs) compiled for both BPF and userspace
 - **shspectr-ebpf** — the eBPF programs (nightly Rust, `bpf-linker`)
-- **shspectr** — the userspace CLI daemon that loads probes, consumes events, and writes to SQLite
+- **shspectr** — the userspace CLI daemon that loads probes, consumes events, and writes to a configurable sink (SQLite or OTel)
 - **shspectr-web** — read-only web UI with live tail, search DSL, and ANSI-rendered terminal output
 
 BTF field offsets are resolved at runtime from the running kernel, so the eBPF programs are portable across kernel versions without recompilation.
@@ -108,6 +110,34 @@ sudo mise run dev -- --filter-pty --filter-ancestor my-agent
 # Custom DB path
 sudo mise run dev -- --db-path /var/lib/shspectr/shspectr.db
 ```
+
+## OpenTelemetry Output
+
+Instead of SQLite, events can be exported as OTLP logs over HTTP to any OpenTelemetry-compatible collector:
+
+```sh
+sudo mise run dev -- --output otel --otel-endpoint http://localhost:4318
+```
+
+Events are emitted as OTLP log records with `service.name=shspectr`. I/O data is base64-encoded and truncated to 4 KiB.
+
+### OTel Demo Stack
+
+The `otel-demo/` directory contains a Docker Compose stack (OTel Collector → Loki → Grafana) with a pre-built dashboard:
+
+```sh
+# Start the collector, Loki, and Grafana
+cd otel-demo
+docker compose up -d
+
+# Run shspectr with OTel output (from the otel-demo directory)
+sudo ./run-shspectr.sh
+
+# Open Grafana at http://localhost:3001
+# Query: {service_name="shspectr"}
+```
+
+Teardown: `docker compose down` from the `otel-demo/` directory.
 
 ## Development
 

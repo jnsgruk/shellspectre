@@ -24,5 +24,7 @@ services:
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
     volumes:
       - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./grafana-dashboard-provisioning.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
+      - ./grafana-dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - loki

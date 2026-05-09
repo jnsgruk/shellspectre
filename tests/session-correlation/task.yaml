@@ -1,19 +1,21 @@
 summary: Events in the same PTY session share a session_id
 execute: |
-  # Run multiple commands in a single PTY session
-  script -qc "ls /tmp >/dev/null; whoami >/dev/null" /dev/null
+  # Run multiple commands in a single PTY session.
+  # Use /usr/bin/stat and /usr/bin/id as unique markers so other tests that
+  # also invoke ls/whoami don't pollute the session-count query.
+  script -qc "/usr/bin/stat / >/dev/null; /usr/bin/id >/dev/null" /dev/null
 
-  # Count distinct session_ids for ls and whoami exec events
+  # Count distinct session_ids for stat and id exec events
   unique_sessions=$(sqlite3 "$DB_PATH" \
     "SELECT COUNT(DISTINCT session_id) FROM events
-     WHERE event_type = 'exec'
-     AND (filename LIKE '%/ls' OR filename LIKE '%/whoami')")
+     WHERE event_type = 0
+     AND (filename = '/usr/bin/stat' OR filename = '/usr/bin/id')")
   test "$unique_sessions" -eq 1
 
   # Verify session_id starts with ox_
   sqlite3 "$DB_PATH" \
     "SELECT session_id FROM events
-     WHERE event_type = 'exec'
-     AND (filename LIKE '%/ls' OR filename LIKE '%/whoami')
+     WHERE event_type = 0
+     AND (filename = '/usr/bin/stat' OR filename = '/usr/bin/id')
      LIMIT 1" \
     | MATCH "^ox_"
