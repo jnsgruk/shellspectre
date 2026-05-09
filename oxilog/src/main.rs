@@ -9,6 +9,7 @@ use tracing_subscriber::{EnvFilter, fmt};
 
 mod btf;
 mod event;
+mod filter;
 mod session;
 
 #[derive(Debug, Parser)]
@@ -25,6 +26,9 @@ enum Command {
         /// Only capture processes attached to a PTY
         #[arg(long)]
         filter_pty: bool,
+        /// Only capture descendants of named processes (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        filter_ancestor: Vec<String>,
     },
     /// Check kernel and BPF capability status
     Check,
@@ -41,15 +45,28 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Run { filter_pty } => run(filter_pty)?,
+        Command::Run {
+            filter_pty,
+            filter_ancestor,
+        } => {
+            let filter_config = filter::FilterConfig {
+                filter_pty,
+                filter_ancestors: filter_ancestor,
+            };
+            run(filter_config)?;
+        }
         Command::Check => check_capabilities()?,
     }
 
     Ok(())
 }
 
-fn run(filter_pty: bool) -> Result<()> {
-    info!(filter_pty, "starting oxilog");
+fn run(filter_config: filter::FilterConfig) -> Result<()> {
+    info!(
+        filter_pty = filter_config.filter_pty,
+        filter_ancestors = ?filter_config.filter_ancestors,
+        "starting oxilog",
+    );
 
     let ebpf_bytes = include_bytes_aligned::include_bytes_aligned!(
         16,
@@ -137,10 +154,13 @@ fn run(filter_pty: bool) -> Result<()> {
     let ring_buf = RingBuf::try_from(ebpf.take_map("EVENTS").context("EVENTS map not found")?)?;
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(consume_events(ring_buf))
+    rt.block_on(consume_events(ring_buf, filter_config))
 }
 
-async fn consume_events(mut ring_buf: RingBuf<aya::maps::MapData>) -> Result<()> {
+async fn consume_events(
+    mut ring_buf: RingBuf<aya::maps::MapData>,
+    filter_config: filter::FilterConfig,
+) -> Result<()> {
     let async_fd = AsyncFd::new(ring_buf.as_raw_fd())?;
     let mut correlator = session::SessionCorrelator::new();
 
@@ -152,29 +172,37 @@ async fn consume_events(mut ring_buf: RingBuf<aya::maps::MapData>) -> Result<()>
 
         // Drain all available events.
         while let Some(item) = ring_buf.next() {
-            handle_event(&item, &mut correlator);
+            handle_event(&item, &mut correlator, &filter_config);
         }
 
         guard.clear_ready();
     }
 }
 
-fn handle_event(data: &[u8], correlator: &mut session::SessionCorrelator) {
+fn handle_event(
+    data: &[u8],
+    correlator: &mut session::SessionCorrelator,
+    filter_config: &filter::FilterConfig,
+) {
     let Some(header) = event::parse_header(data) else {
         tracing::warn!(len = data.len(), "event too short, skipping");
         return;
     };
 
     match header.event_type {
-        EventType::Exec => handle_exec_event(data, correlator),
-        EventType::Exit => handle_exit_event(data, correlator),
+        EventType::Exec => handle_exec_event(data, correlator, filter_config),
+        EventType::Exit => handle_exit_event(data, correlator, filter_config),
         EventType::Read | EventType::Write => {
-            handle_io_event(data, correlator, header.event_type);
+            handle_io_event(data, correlator, filter_config, header.event_type);
         }
     }
 }
 
-fn handle_exec_event(data: &[u8], correlator: &mut session::SessionCorrelator) {
+fn handle_exec_event(
+    data: &[u8],
+    correlator: &mut session::SessionCorrelator,
+    filter_config: &filter::FilterConfig,
+) {
     let Some(exec) = event::parse_exec_event(data) else {
         tracing::warn!("exec event too short");
         return;
@@ -183,8 +211,22 @@ fn handle_exec_event(data: &[u8], correlator: &mut session::SessionCorrelator) {
         pid: exec.pid,
         ppid: exec.ppid,
         tty_nr: exec.tty_nr,
+        comm: exec.comm.clone(),
     };
     let session_id = correlator.on_exec(&event_info).to_string();
+
+    if !filter_config.is_empty() {
+        let ancestor_comms = correlator.ancestor_comms(exec.pid);
+        let fi = filter::FilterInput {
+            tty_nr: exec.tty_nr,
+            comm: exec.comm.clone(),
+            ancestor_comms,
+        };
+        if !filter::passes_filter(filter_config, &fi) {
+            return;
+        }
+    }
+
     info!(
         event = "exec",
         session_id = %session_id,
@@ -202,7 +244,11 @@ fn handle_exec_event(data: &[u8], correlator: &mut session::SessionCorrelator) {
     );
 }
 
-fn handle_exit_event(data: &[u8], correlator: &mut session::SessionCorrelator) {
+fn handle_exit_event(
+    data: &[u8],
+    correlator: &mut session::SessionCorrelator,
+    filter_config: &filter::FilterConfig,
+) {
     let Some(exit) = event::parse_exit_event(data) else {
         tracing::warn!("exit event too short");
         return;
@@ -211,8 +257,23 @@ fn handle_exit_event(data: &[u8], correlator: &mut session::SessionCorrelator) {
         pid: exit.pid,
         ppid: exit.ppid,
         tty_nr: exit.tty_nr,
+        comm: exit.comm.clone(),
     };
     let session_id = correlator.session_for(&event_info).to_string();
+
+    if !filter_config.is_empty() {
+        let ancestor_comms = correlator.ancestor_comms(exit.pid);
+        let fi = filter::FilterInput {
+            tty_nr: exit.tty_nr,
+            comm: exit.comm.clone(),
+            ancestor_comms,
+        };
+        if !filter::passes_filter(filter_config, &fi) {
+            correlator.on_exit(exit.pid);
+            return;
+        }
+    }
+
     correlator.on_exit(exit.pid);
     info!(
         event = "exit",
@@ -232,6 +293,7 @@ fn handle_exit_event(data: &[u8], correlator: &mut session::SessionCorrelator) {
 fn handle_io_event(
     data: &[u8],
     correlator: &mut session::SessionCorrelator,
+    filter_config: &filter::FilterConfig,
     event_type: EventType,
 ) {
     let Some(io) = event::parse_io_event(data) else {
@@ -242,8 +304,22 @@ fn handle_io_event(
         pid: io.pid,
         ppid: io.ppid,
         tty_nr: io.tty_nr,
+        comm: io.comm.clone(),
     };
     let session_id = correlator.session_for(&event_info).to_string();
+
+    if !filter_config.is_empty() {
+        let ancestor_comms = correlator.ancestor_comms(io.pid);
+        let fi = filter::FilterInput {
+            tty_nr: io.tty_nr,
+            comm: io.comm.clone(),
+            ancestor_comms,
+        };
+        if !filter::passes_filter(filter_config, &fi) {
+            return;
+        }
+    }
+
     let data_str = String::from_utf8_lossy(&io.data);
     info!(
         event = if event_type == EventType::Read { "read" } else { "write" },

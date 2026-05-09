@@ -21,10 +21,10 @@ pub(crate) const SESSION_ID_PREFIX: &str = "ox_";
 #[derive(Debug, Clone)]
 struct ProcessInfo {
     session_id: String,
-    #[allow(dead_code)]
     ppid: u32,
     #[allow(dead_code)]
     tty_nr: u32,
+    comm: String,
 }
 
 /// Correlates events into logical sessions.
@@ -42,6 +42,7 @@ pub struct EventInfo {
     pub pid: u32,
     pub ppid: u32,
     pub tty_nr: u32,
+    pub comm: String,
 }
 
 impl SessionCorrelator {
@@ -73,6 +74,7 @@ impl SessionCorrelator {
                 session_id,
                 ppid: info.ppid,
                 tty_nr: info.tty_nr,
+                comm: info.comm.clone(),
             },
         );
 
@@ -92,6 +94,7 @@ impl SessionCorrelator {
                     session_id,
                     ppid: info.ppid,
                     tty_nr: info.tty_nr,
+                    comm: info.comm.clone(),
                 },
             );
         }
@@ -101,6 +104,28 @@ impl SessionCorrelator {
     /// Record a process exit. Returns the session ID if the process was tracked.
     pub fn on_exit(&mut self, pid: u32) -> Option<String> {
         self.pid_map.remove(&pid).map(|info| info.session_id)
+    }
+
+    /// Walk the ppid chain and return the comm of each known ancestor.
+    pub fn ancestor_comms(&self, pid: u32) -> Vec<String> {
+        let mut comms = Vec::new();
+        let mut current = pid;
+        // Walk up to 32 levels to avoid infinite loops from stale data.
+        for _ in 0..32 {
+            let Some(info) = self.pid_map.get(&current) else {
+                break;
+            };
+            if info.ppid == current {
+                break; // pid 1 is its own parent
+            }
+            current = info.ppid;
+            if let Some(parent) = self.pid_map.get(&current) {
+                comms.push(parent.comm.clone());
+            } else {
+                break;
+            }
+        }
+        comms
     }
 
     /// Resolve which session a process belongs to.
@@ -156,6 +181,20 @@ fn generate_session_id() -> String {
 mod tests {
     use super::*;
 
+    /// Helper to create EventInfo with a default comm.
+    fn ei(pid: u32, ppid: u32, tty_nr: u32) -> EventInfo {
+        ei_comm(pid, ppid, tty_nr, "test")
+    }
+
+    fn ei_comm(pid: u32, ppid: u32, tty_nr: u32, comm: &str) -> EventInfo {
+        EventInfo {
+            pid,
+            ppid,
+            tty_nr,
+            comm: comm.into(),
+        }
+    }
+
     #[test]
     fn session_id_format() {
         let id = generate_session_id();
@@ -174,89 +213,33 @@ mod tests {
     #[test]
     fn pty_processes_share_session() {
         let mut c = SessionCorrelator::new();
-        let s1 = c
-            .on_exec(&EventInfo {
-                pid: 100,
-                ppid: 1,
-                tty_nr: 42,
-            })
-            .to_string();
-        let s2 = c
-            .on_exec(&EventInfo {
-                pid: 200,
-                ppid: 1,
-                tty_nr: 42,
-            })
-            .to_string();
+        let s1 = c.on_exec(&ei(100, 1, 42)).to_string();
+        let s2 = c.on_exec(&ei(200, 1, 42)).to_string();
         assert_eq!(s1, s2, "same tty_nr should yield same session");
     }
 
     #[test]
     fn different_ptys_get_different_sessions() {
         let mut c = SessionCorrelator::new();
-        let s1 = c
-            .on_exec(&EventInfo {
-                pid: 100,
-                ppid: 1,
-                tty_nr: 42,
-            })
-            .to_string();
-        let s2 = c
-            .on_exec(&EventInfo {
-                pid: 200,
-                ppid: 1,
-                tty_nr: 43,
-            })
-            .to_string();
+        let s1 = c.on_exec(&ei(100, 1, 42)).to_string();
+        let s2 = c.on_exec(&ei(200, 1, 43)).to_string();
         assert_ne!(s1, s2, "different tty_nr should yield different sessions");
     }
 
     #[test]
     fn child_inherits_parent_session() {
         let mut c = SessionCorrelator::new();
-        // Parent has no PTY, gets a singleton session.
-        let parent_sid = c
-            .on_exec(&EventInfo {
-                pid: 100,
-                ppid: 1,
-                tty_nr: 0,
-            })
-            .to_string();
-        // Child references parent.
-        let child_sid = c
-            .on_exec(&EventInfo {
-                pid: 200,
-                ppid: 100,
-                tty_nr: 0,
-            })
-            .to_string();
+        let parent_sid = c.on_exec(&ei(100, 1, 0)).to_string();
+        let child_sid = c.on_exec(&ei(200, 100, 0)).to_string();
         assert_eq!(parent_sid, child_sid, "child should inherit parent session");
     }
 
     #[test]
     fn grandchild_inherits_session() {
         let mut c = SessionCorrelator::new();
-        let s1 = c
-            .on_exec(&EventInfo {
-                pid: 100,
-                ppid: 1,
-                tty_nr: 0,
-            })
-            .to_string();
-        let s2 = c
-            .on_exec(&EventInfo {
-                pid: 200,
-                ppid: 100,
-                tty_nr: 0,
-            })
-            .to_string();
-        let s3 = c
-            .on_exec(&EventInfo {
-                pid: 300,
-                ppid: 200,
-                tty_nr: 0,
-            })
-            .to_string();
+        let s1 = c.on_exec(&ei(100, 1, 0)).to_string();
+        let s2 = c.on_exec(&ei(200, 100, 0)).to_string();
+        let s3 = c.on_exec(&ei(300, 200, 0)).to_string();
         assert_eq!(s1, s2);
         assert_eq!(s2, s3, "grandchild should inherit through chain");
     }
@@ -264,54 +247,23 @@ mod tests {
     #[test]
     fn unknown_parent_gets_singleton() {
         let mut c = SessionCorrelator::new();
-        let s1 = c
-            .on_exec(&EventInfo {
-                pid: 100,
-                ppid: 999,
-                tty_nr: 0,
-            })
-            .to_string();
-        let s2 = c
-            .on_exec(&EventInfo {
-                pid: 200,
-                ppid: 998,
-                tty_nr: 0,
-            })
-            .to_string();
+        let s1 = c.on_exec(&ei(100, 999, 0)).to_string();
+        let s2 = c.on_exec(&ei(200, 998, 0)).to_string();
         assert_ne!(s1, s2, "unrelated processes should get different sessions");
     }
 
     #[test]
     fn reexec_keeps_session() {
         let mut c = SessionCorrelator::new();
-        let s1 = c
-            .on_exec(&EventInfo {
-                pid: 100,
-                ppid: 1,
-                tty_nr: 42,
-            })
-            .to_string();
-        // Same PID re-execs (e.g. shell exec's into another program).
-        let s2 = c
-            .on_exec(&EventInfo {
-                pid: 100,
-                ppid: 1,
-                tty_nr: 42,
-            })
-            .to_string();
+        let s1 = c.on_exec(&ei(100, 1, 42)).to_string();
+        let s2 = c.on_exec(&ei(100, 1, 42)).to_string();
         assert_eq!(s1, s2, "re-exec should keep existing session");
     }
 
     #[test]
     fn on_exit_removes_process() {
         let mut c = SessionCorrelator::new();
-        let sid = c
-            .on_exec(&EventInfo {
-                pid: 100,
-                ppid: 1,
-                tty_nr: 0,
-            })
-            .to_string();
+        let sid = c.on_exec(&ei(100, 1, 0)).to_string();
         let removed = c.on_exit(100);
         assert_eq!(removed, Some(sid));
         assert_eq!(c.tracked_count(), 0);
@@ -326,13 +278,7 @@ mod tests {
     #[test]
     fn session_for_untracked_process_creates_entry() {
         let mut c = SessionCorrelator::new();
-        let sid = c
-            .session_for(&EventInfo {
-                pid: 100,
-                ppid: 1,
-                tty_nr: 0,
-            })
-            .to_string();
+        let sid = c.session_for(&ei(100, 1, 0)).to_string();
         assert!(sid.starts_with("ox_"));
         assert_eq!(c.tracked_count(), 1);
     }
@@ -340,43 +286,34 @@ mod tests {
     #[test]
     fn session_for_tracked_process_returns_existing() {
         let mut c = SessionCorrelator::new();
-        let s1 = c
-            .on_exec(&EventInfo {
-                pid: 100,
-                ppid: 1,
-                tty_nr: 42,
-            })
-            .to_string();
-        let s2 = c
-            .session_for(&EventInfo {
-                pid: 100,
-                ppid: 1,
-                tty_nr: 42,
-            })
-            .to_string();
+        let s1 = c.on_exec(&ei(100, 1, 42)).to_string();
+        let s2 = c.session_for(&ei(100, 1, 42)).to_string();
         assert_eq!(s1, s2);
     }
 
     #[test]
     fn io_event_on_pty_process_inherits_session() {
         let mut c = SessionCorrelator::new();
-        // Shell starts on a PTY.
-        let shell_sid = c
-            .on_exec(&EventInfo {
-                pid: 100,
-                ppid: 1,
-                tty_nr: 42,
-            })
-            .to_string();
-        // A child writes to stdout — might not have been seen via execve yet,
-        // but shares the same TTY.
-        let io_sid = c
-            .session_for(&EventInfo {
-                pid: 200,
-                ppid: 100,
-                tty_nr: 42,
-            })
-            .to_string();
+        let shell_sid = c.on_exec(&ei(100, 1, 42)).to_string();
+        let io_sid = c.session_for(&ei(200, 100, 42)).to_string();
         assert_eq!(shell_sid, io_sid);
+    }
+
+    #[test]
+    fn ancestor_comms_walks_chain() {
+        let mut c = SessionCorrelator::new();
+        c.on_exec(&ei_comm(1, 0, 0, "systemd"));
+        c.on_exec(&ei_comm(100, 1, 0, "sshd"));
+        c.on_exec(&ei_comm(200, 100, 0, "bash"));
+        c.on_exec(&ei_comm(300, 200, 0, "ls"));
+
+        let comms = c.ancestor_comms(300);
+        assert_eq!(comms, vec!["bash", "sshd", "systemd"]);
+    }
+
+    #[test]
+    fn ancestor_comms_empty_for_unknown() {
+        let c = SessionCorrelator::new();
+        assert!(c.ancestor_comms(999).is_empty());
     }
 }

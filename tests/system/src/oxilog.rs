@@ -12,9 +12,15 @@ const REMOTE_LOG: &str = "/tmp/oxilog.jsonl";
 /// Start oxilog in the background, capturing JSON output to a file.
 /// Returns the PID of the background process.
 pub async fn start(session: &Session) -> Result<String> {
+    start_with_args(session, "").await
+}
+
+/// Start oxilog with extra CLI args, capturing JSON output to a file.
+/// Returns the PID of the background process.
+pub async fn start_with_args(session: &Session, extra_args: &str) -> Result<String> {
     let pid = ssh::exec(
         session,
-        &format!("RUST_LOG=info {REMOTE_BIN} run > {REMOTE_LOG} 2>&1 & echo $!"),
+        &format!("RUST_LOG=info {REMOTE_BIN} run {extra_args} > {REMOTE_LOG} 2>&1 & echo $!"),
     )
     .await
     .context("start oxilog")?;
