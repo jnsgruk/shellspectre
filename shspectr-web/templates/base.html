@@ -46,6 +46,24 @@
         {% block content %}{% endblock %}
     </main>
 <script>
+function shspectrBuildQuery(current, key, value, replaceOnly = false) {
+    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const withoutKey = current.replace(new RegExp(`(^|\\s)!?${escapedKey}:\\S+`, 'g'), ' ').replace(/\s+/g, ' ').trim();
+    if (replaceOnly) {
+        return `${key}:${value}`;
+    }
+    return `${withoutKey} ${key}:${value}`.trim();
+}
+
+function shspectrQueryUrl(base, query) {
+    return `${base}?q=${encodeURIComponent(query)}`;
+}
+
+function shspectrRequest(query, live) {
+    const base = live ? '/api/v1/events/live' : '/api/v1/events';
+    return shspectrQueryUrl(base, query);
+}
+
 // Cap live tail rows at 500 to prevent unbounded DOM growth.
 const MAX_ROWS = 500;
 const observer = new MutationObserver(() => {

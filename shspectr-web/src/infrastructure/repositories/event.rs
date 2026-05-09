@@ -56,14 +56,29 @@ fn add_like(
     let idx = params.len() + 1;
     if negated {
         if nullable {
-            conditions.push(format!("({column} IS NULL OR {column} NOT LIKE ?{idx})"));
+            conditions.push(format!(
+                "({column} IS NULL OR {column} NOT LIKE ?{idx} ESCAPE '\\')"
+            ));
         } else {
-            conditions.push(format!("{column} NOT LIKE ?{idx}"));
+            conditions.push(format!("{column} NOT LIKE ?{idx} ESCAPE '\\'"));
         }
     } else {
-        conditions.push(format!("{column} LIKE ?{idx}"));
+        conditions.push(format!("{column} LIKE ?{idx} ESCAPE '\\'"));
     }
     params.push(Box::new(pattern));
+}
+
+fn escape_like_pattern(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+fn glob_to_like_pattern(value: &str) -> String {
+    escape_like_pattern(value)
+        .replace('*', "%")
+        .replace('?', "_")
 }
 
 /// Build a WHERE clause and positional parameters from a filter.
@@ -76,7 +91,7 @@ fn build_where_clause(filter: &EventFilter) -> (String, Vec<Box<dyn rusqlite::ty
     conditions.push("event_type = 'exec'".to_owned());
 
     if let Some(ref fv) = filter.comm {
-        let like_pattern = fv.value.replace('*', "%").replace('?', "_");
+        let like_pattern = glob_to_like_pattern(&fv.value);
         add_like(
             &mut conditions,
             &mut params,
@@ -92,7 +107,7 @@ fn build_where_clause(filter: &EventFilter) -> (String, Vec<Box<dyn rusqlite::ty
     }
 
     if let Some(ref fv) = filter.session_id {
-        let pattern = format!("{}%", fv.value);
+        let pattern = format!("{}%", escape_like_pattern(&fv.value));
         add_like(
             &mut conditions,
             &mut params,
@@ -124,7 +139,7 @@ fn build_where_clause(filter: &EventFilter) -> (String, Vec<Box<dyn rusqlite::ty
     }
 
     if let Some(ref fv) = filter.file {
-        let like_pattern = fv.value.replace('*', "%").replace('?', "_");
+        let like_pattern = glob_to_like_pattern(&fv.value);
         add_like(
             &mut conditions,
             &mut params,
@@ -136,18 +151,11 @@ fn build_where_clause(filter: &EventFilter) -> (String, Vec<Box<dyn rusqlite::ty
     }
 
     if let Some(ref fv) = filter.cmd {
-        // Match basename of filename: prepend `%/` to anchor after the last slash.
-        let glob = fv.value.replace('*', "%").replace('?', "_");
-        let like_pattern = if glob.starts_with('%') {
-            // Already starts with wildcard — no need for extra `%/` prefix.
-            glob
-        } else {
-            format!("%/{glob}")
-        };
+        let like_pattern = glob_to_like_pattern(&fv.value);
         add_like(
             &mut conditions,
             &mut params,
-            "filename",
+            "comm",
             like_pattern,
             fv.negated,
             true,
@@ -173,9 +181,9 @@ fn build_where_clause(filter: &EventFilter) -> (String, Vec<Box<dyn rusqlite::ty
     if let Some(ref text) = filter.text {
         let idx = params.len() + 1;
         conditions.push(format!(
-            "(comm LIKE ?{idx} OR filename LIKE ?{idx} OR argv LIKE ?{idx})"
+            "(comm LIKE ?{idx} ESCAPE '\\' OR filename LIKE ?{idx} ESCAPE '\\' OR argv LIKE ?{idx} ESCAPE '\\')"
         ));
-        params.push(Box::new(format!("%{text}%")));
+        params.push(Box::new(format!("%{}%", escape_like_pattern(text))));
     }
 
     let clause = if conditions.is_empty() {
@@ -194,24 +202,25 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventSummary> {
         timestamp: row.get(1)?,
         session_id: row.get(2)?,
         event_type: row.get(3)?,
-        pid: row.get(4)?,
-        ppid: row.get(5)?,
-        uid: row.get(6)?,
-        euid: row.get(7)?,
-        comm: row.get(8)?,
-        filename: row.get(9)?,
-        argv: row.get(10)?,
-        exit_code: row.get(11)?,
+        execution_id: row.get(4)?,
+        pid: row.get(5)?,
+        ppid: row.get(6)?,
+        uid: row.get(7)?,
+        euid: row.get(8)?,
+        comm: row.get(9)?,
+        filename: row.get(10)?,
+        argv: row.get(11)?,
+        exit_code: row.get(12)?,
     })
 }
 
-/// Fetch I/O chunks for a given session + PID and populate the detail.
+/// Fetch I/O chunks for a given execution and populate the detail.
 fn fetch_io_chunks(conn: &rusqlite::Connection, detail: &mut EventDetail) -> Result<()> {
     let mut io_stmt = conn
         .prepare(
             "SELECT timestamp, fd, data, byte_count \
              FROM events \
-             WHERE session_id = ?1 AND pid = ?2 \
+             WHERE session_id = ?1 AND pid = ?2 AND execution_id = ?3 \
                AND event_type IN ('read', 'write') \
              ORDER BY id ASC",
         )
@@ -219,7 +228,11 @@ fn fetch_io_chunks(conn: &rusqlite::Connection, detail: &mut EventDetail) -> Res
 
     let io_rows = io_stmt
         .query_map(
-            params![detail.summary.session_id, detail.summary.pid],
+            params![
+                detail.summary.session_id,
+                detail.summary.pid,
+                detail.summary.execution_id
+            ],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -269,7 +282,7 @@ impl EventRepository for SqlEventRepository {
         let order_dir = req.direction.as_sql();
 
         let select_sql = format!(
-            "SELECT id, timestamp, session_id, event_type, pid, ppid, uid, euid, \
+            "SELECT id, timestamp, session_id, event_type, execution_id, pid, ppid, uid, euid, \
                     comm, filename, argv, exit_code \
              FROM events {where_clause} \
              ORDER BY {order_col} {order_dir}, id DESC \
@@ -308,9 +321,9 @@ impl EventRepository for SqlEventRepository {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, timestamp, session_id, event_type, pid, ppid, uid, gid, euid, \
+                "SELECT id, timestamp, session_id, event_type, execution_id, pid, ppid, uid, gid, euid, \
                         comm, filename, argv, exit_code, tty_nr, fd, data, data_len, byte_count \
-                 FROM events WHERE id = ?1",
+                  FROM events WHERE id = ?1",
             )
             .context("failed to prepare detail query")?;
 
@@ -321,22 +334,23 @@ impl EventRepository for SqlEventRepository {
                     timestamp: row.get(1)?,
                     session_id: row.get(2)?,
                     event_type: row.get(3)?,
-                    pid: row.get(4)?,
-                    ppid: row.get(5)?,
-                    uid: row.get(6)?,
-                    euid: row.get(8)?,
-                    comm: row.get(9)?,
-                    filename: row.get(10)?,
-                    argv: row.get(11)?,
-                    exit_code: row.get(12)?,
+                    execution_id: row.get(4)?,
+                    pid: row.get(5)?,
+                    ppid: row.get(6)?,
+                    uid: row.get(7)?,
+                    euid: row.get(9)?,
+                    comm: row.get(10)?,
+                    filename: row.get(11)?,
+                    argv: row.get(12)?,
+                    exit_code: row.get(13)?,
                 };
                 Ok(EventDetail {
-                    gid: row.get(7)?,
-                    tty_nr: row.get(13)?,
-                    fd: row.get(14)?,
-                    data: row.get(15)?,
-                    data_len: row.get(16)?,
-                    byte_count: row.get(17)?,
+                    gid: row.get(8)?,
+                    tty_nr: row.get(14)?,
+                    fd: row.get(15)?,
+                    data: row.get(16)?,
+                    data_len: row.get(17)?,
+                    byte_count: row.get(18)?,
                     summary,
                     stdin_data: Vec::new(),
                     stdout_data: Vec::new(),
@@ -372,7 +386,7 @@ impl EventRepository for SqlEventRepository {
         };
 
         let sql = format!(
-            "SELECT id, timestamp, session_id, event_type, pid, ppid, uid, euid, \
+            "SELECT id, timestamp, session_id, event_type, execution_id, pid, ppid, uid, euid, \
                     comm, filename, argv, exit_code \
              FROM events {full_where} \
              ORDER BY id ASC \
@@ -404,6 +418,11 @@ impl EventRepository for SqlEventRepository {
         Ok(max_id)
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+#[path = "test_fixtures.rs"]
+mod test_fixtures;
 
 #[cfg(test)]
 #[allow(clippy::expect_used)]

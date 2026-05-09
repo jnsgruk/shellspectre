@@ -480,6 +480,10 @@ mod tests {
         assert_eq!(f.warnings.len(), 1);
         assert!(f.warnings[0].contains("expects a number"));
         assert!(f.warnings[0].contains("abc"));
+        assert!(
+            f.text.is_none(),
+            "invalid numeric filters must not widen into bare text search"
+        );
     }
 
     #[test]
@@ -507,6 +511,10 @@ mod tests {
         let f = EventFilter::parse("exit:abc");
         assert_eq!(f.warnings.len(), 1);
         assert!(f.warnings[0].contains("expects a number"));
+        assert!(
+            f.text.is_none(),
+            "invalid numeric filters must not widen into text search"
+        );
     }
 
     #[test]

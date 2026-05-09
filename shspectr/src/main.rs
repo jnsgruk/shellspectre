@@ -152,6 +152,58 @@ fn attach_tracepoint(ebpf: &mut Ebpf, name: &str) -> Result<()> {
     Ok(())
 }
 
+fn load_ebpf_bytes() -> Result<Vec<u8>> {
+    let path = ebpf_artifact_path();
+    std::fs::read(&path).with_context(|| {
+        format!(
+            "failed to read eBPF artifact at {}; run `mise run build-ebpf` or `mise run build` first",
+            path.display()
+        )
+    })
+}
+
+fn ebpf_artifact_path() -> std::path::PathBuf {
+    let env_override = std::env::var("SHSPECTR_EBPF_PATH").ok();
+    let current_exe =
+        std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("shspectr"));
+    ebpf_artifact_path_from(env_override, &current_exe)
+}
+
+fn ebpf_artifact_path_from(
+    env_override: Option<String>,
+    current_exe: &std::path::Path,
+) -> std::path::PathBuf {
+    if let Some(path) = env_override.filter(|path| !path.is_empty()) {
+        return std::path::PathBuf::from(path);
+    }
+
+    if current_exe
+        .parent()
+        .and_then(std::path::Path::file_name)
+        .is_some_and(|name| name == "debug" || name == "release")
+        && let Some(workspace_root) = current_exe
+            .parent()
+            .and_then(std::path::Path::parent)
+            .and_then(std::path::Path::parent)
+    {
+        return workspace_root
+            .join("shspectr-ebpf/target/bpfel-unknown-none/release/shspectr-ebpf");
+    }
+
+    current_exe
+        .parent()
+        .and_then(std::path::Path::parent)
+        .map_or_else(
+            || {
+                std::path::PathBuf::from(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../shspectr-ebpf/target/bpfel-unknown-none/release/shspectr-ebpf"
+                ))
+            },
+            |root| root.join("shspectr-ebpf"),
+        )
+}
+
 #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 fn run(
     filter_config: filter::FilterConfig,
@@ -165,19 +217,7 @@ fn run(
         "starting shspectr",
     );
 
-    let ebpf_bytes = include_bytes_aligned::include_bytes_aligned!(
-        16,
-        "../../shspectr-ebpf/target/bpfel-unknown-none/release/shspectr-ebpf"
-    );
-
-    let mut ebpf = Ebpf::load(ebpf_bytes).context("failed to load eBPF program")?;
-
-    attach_tracepoint(&mut ebpf, "sys_enter_execve")?;
-    attach_tracepoint(&mut ebpf, "sys_exit_execve")?;
-    attach_tracepoint(&mut ebpf, "sys_enter_exit_group")?;
-    attach_tracepoint(&mut ebpf, "sys_enter_write")?;
-    attach_tracepoint(&mut ebpf, "sys_enter_read")?;
-    attach_tracepoint(&mut ebpf, "sys_exit_read")?;
+    let mut ebpf = Ebpf::load(&load_ebpf_bytes()?).context("failed to load eBPF program")?;
 
     // Tell eBPF to skip events from our own process (avoids feedback loops).
     let mut self_tgid_map: aya::maps::Array<_, u32> = aya::maps::Array::try_from(
@@ -199,6 +239,14 @@ fn run(
     for (idx, value) in (0u32..).zip(offsets.as_array()) {
         offsets_map.set(idx, value, 0)?;
     }
+
+    attach_tracepoint(&mut ebpf, "sys_enter_execve")?;
+    attach_tracepoint(&mut ebpf, "sys_exit_execve")?;
+    attach_tracepoint(&mut ebpf, "sys_enter_exit_group")?;
+    attach_tracepoint(&mut ebpf, "sys_enter_write")?;
+    attach_tracepoint(&mut ebpf, "sys_exit_write")?;
+    attach_tracepoint(&mut ebpf, "sys_enter_read")?;
+    attach_tracepoint(&mut ebpf, "sys_exit_read")?;
 
     // Open the ring buffer.
     let ring_buf = RingBuf::try_from(ebpf.take_map("EVENTS").context("EVENTS map not found")?)?;
@@ -276,15 +324,24 @@ fn handle_event(
     sink: Option<&sqlite_sink::SqliteSink>,
 ) {
     let Some(header) = event::parse_header(data) else {
-        tracing::warn!(len = data.len(), "event too short, skipping");
+        tracing::warn!(len = data.len(), "invalid or truncated event, skipping");
         return;
     };
 
-    match header.event_type {
+    let Some(event_type) = header.decoded_event_type() else {
+        tracing::warn!(
+            raw_event_type = header.event_type,
+            wire_version = header.wire_version,
+            "invalid event header, skipping"
+        );
+        return;
+    };
+
+    match event_type {
         EventType::Exec => handle_exec_event(data, correlator, filter_config, sink),
         EventType::Exit => handle_exit_event(data, correlator, filter_config, sink),
         EventType::Read | EventType::Write => {
-            handle_io_event(data, correlator, filter_config, sink, header.event_type);
+            handle_io_event(data, correlator, filter_config, sink, event_type);
         }
     }
 }
@@ -305,6 +362,7 @@ fn handle_exec_event(
         ppid: exec.ppid,
         tty_nr: exec.tty_nr,
         comm: exec.comm.clone(),
+        execution_id: exec.execution_id,
     };
     let session_id = correlator.on_exec(&event_info).to_string();
 
@@ -373,6 +431,7 @@ fn handle_exit_event(
         ppid: exit.ppid,
         tty_nr: exit.tty_nr,
         comm: exit.comm.clone(),
+        execution_id: exit.execution_id,
     };
     let session_id = correlator.session_for(&event_info).to_string();
 
@@ -389,7 +448,9 @@ fn handle_exit_event(
         }
     }
 
-    correlator.on_exit(exit.pid);
+    let session_complete = correlator
+        .on_exit(exit.pid)
+        .is_some_and(|info| info.session_complete);
     if sink.is_none() {
         info!(
             event = "exit",
@@ -407,7 +468,7 @@ fn handle_exit_event(
     }
 
     if let Some(db) = sink
-        && let Err(e) = db.insert_exit(&session_id, &exit)
+        && let Err(e) = db.insert_exit(&session_id, &exit, session_complete)
     {
         tracing::warn!(%e, "failed to insert exit event");
     }
@@ -430,6 +491,7 @@ fn handle_io_event(
         ppid: io.ppid,
         tty_nr: io.tty_nr,
         comm: io.comm.clone(),
+        execution_id: io.execution_id,
     };
     let session_id = correlator.session_for(&event_info).to_string();
 
@@ -521,4 +583,45 @@ fn check_capabilities() -> Result<()> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn ebpf_path_prefers_environment_override() {
+        let path = super::ebpf_artifact_path_from(
+            Some("/tmp/custom-ebpf".to_owned()),
+            std::path::Path::new("/ignored/bin/shspectr"),
+        );
+
+        assert_eq!(path, std::path::PathBuf::from("/tmp/custom-ebpf"));
+    }
+
+    #[test]
+    fn ebpf_path_falls_back_next_to_binary_tree() {
+        let path = super::ebpf_artifact_path_from(
+            None,
+            std::path::Path::new("/opt/shspectr/bin/shspectr"),
+        );
+
+        assert_eq!(
+            path,
+            std::path::PathBuf::from("/opt/shspectr/shspectr-ebpf")
+        );
+    }
+
+    #[test]
+    fn ebpf_path_uses_workspace_layout_for_target_debug_binary() {
+        let path = super::ebpf_artifact_path_from(
+            None,
+            std::path::Path::new("/home/jon/oxilog/target/debug/shspectr"),
+        );
+
+        assert_eq!(
+            path,
+            std::path::PathBuf::from(
+                "/home/jon/oxilog/shspectr-ebpf/target/bpfel-unknown-none/release/shspectr-ebpf"
+            )
+        );
+    }
 }

@@ -16,38 +16,35 @@ mise install
 # Build everything (eBPF + userspace)
 mise run build
 
-# Check kernel and BPF capability status
-sudo mise run run -- check
-
-# Run (requires root or CAP_BPF + CAP_PERFMON)
-sudo mise run run -- run --filter-pty    # PTY sessions only
-sudo mise run run -- run                 # All processes
+# Build and run with SQLite + web UI (requires root or CAP_BPF + CAP_PERFMON)
+sudo mise run dev
+# Open http://localhost:3000
 ```
 
 ## Web UI
 
 ```sh
-# Browse recorded sessions (reads SQLite DB at ./shspectr.db)
-mise run run-web-dev
+# Browse recorded sessions standalone (reads SQLite DB at ./shspectr.db)
+mise run dev-web
 # Open http://localhost:3000
 ```
 
 ## Filtering
 
-Composable filters narrow which processes are recorded. No filters = capture everything.
+Composable filters narrow which processes are recorded. Pass extra args after `mise run dev --`:
 
 ```sh
 # PTY sessions (SSH, local terminals, tmux/screen)
-sudo mise run run -- run --filter-pty
+sudo mise run dev -- --filter-pty
 
 # Descendants of specific processes
-sudo mise run run -- run --filter-ancestor sshd,ansible
+sudo mise run dev -- --filter-ancestor sshd,ansible
 
 # Combine filters (OR logic)
-sudo mise run run -- run --filter-pty --filter-ancestor my-agent
+sudo mise run dev -- --filter-pty --filter-ancestor my-agent
 
-# Output to SQLite instead of stdout
-sudo mise run run -- run --output sqlite --db-path /var/lib/shspectr/shspectr.db
+# Custom DB path
+sudo mise run dev -- --db-path /var/lib/shspectr/shspectr.db
 ```
 
 ## Development

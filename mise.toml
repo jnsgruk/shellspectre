@@ -40,45 +40,11 @@ run = [
   "cargo +nightly clippy --manifest-path shspectr-ebpf/Cargo.toml -Z build-std=core --target bpfel-unknown-none -- -D warnings",
 ]
 
-[tasks.check-file-length]
-description = "Enforce max 750 lines per .rs file"
-run = """
-#!/usr/bin/env bash
-set -euo pipefail
-max=750
-failed=0
-while IFS= read -r f; do
-  lines=$(wc -l < "$f")
-  if [ "$lines" -gt "$max" ]; then
-    echo "ERROR: $f has $lines lines (max $max)"
-    failed=1
-  fi
-done < <(find shspectr shspectr-common shspectr-ebpf shspectr-web tests/system -name '*.rs' 2>/dev/null)
-if [ "$failed" -eq 1 ]; then
-  exit 1
-fi
-echo "All files within $max line limit"
-"""
-
-[tasks.build-web]
-description = "Build the web crate (downloads Tailwind on first run)"
-run = "cargo build -p shspectr-web"
-
-[tasks.test-web]
-description = "Run web crate tests"
-run = "cargo test -p shspectr-web"
-
-[tasks.run-web]
-description = "Run the web UI server via the main shspectr binary"
-depends = ["build"]
-run = "cargo run -p shspectr -- web"
-
-[tasks.run-web-dev]
+[tasks.dev-web]
 description = "Run the web UI server standalone (no eBPF build needed)"
-depends = ["build-web"]
 run = "cargo run -p shspectr-web --"
 
-[tasks.run]
-description = "Build and run shspectr"
+[tasks.dev]
+description = "Build and run shspectr with SQLite + web UI"
 depends = ["build"]
-run = "cargo run -p shspectr --"
+run = "sudo ./target/debug/shspectr run --output sqlite --web --web-bind 0.0.0.0"

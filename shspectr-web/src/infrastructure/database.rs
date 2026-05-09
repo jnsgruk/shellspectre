@@ -12,22 +12,12 @@ pub type DbPool = Pool<SqliteConnectionManager>;
 
 /// Create a read-only connection pool to a SQLite database.
 ///
-/// If the database file does not exist, it is created with the shspectr
-/// schema (empty tables). The pool is always opened read-only after
-/// initialisation.
-///
-/// # Errors
-///
-/// Returns an error if the database cannot be created or the pool
-/// cannot be opened.
+/// Returns an error if the database file is missing or cannot be opened.
 pub fn create_pool(db_path: &str) -> Result<DbPool> {
     if !Path::new(db_path).exists() {
-        tracing::info!(
-            path = db_path,
-            "database not found, creating empty database"
+        anyhow::bail!(
+            "database not found at {db_path}; the collector must create it before starting shspectr-web"
         );
-        let conn = rusqlite::Connection::open(db_path).context("failed to create database file")?;
-        init_schema(&conn)?;
     }
 
     let manager = SqliteConnectionManager::file(db_path)

@@ -14,6 +14,8 @@ pub struct EventSummary {
     pub session_id: String,
     /// `events.event_type` (TEXT NOT NULL) — "exec", "exit", "read", "write".
     pub event_type: String,
+    /// `events.execution_id` (INTEGER NOT NULL).
+    pub execution_id: u64,
     /// `events.pid` (INTEGER NOT NULL).
     pub pid: u32,
     /// `events.ppid` (INTEGER NOT NULL).

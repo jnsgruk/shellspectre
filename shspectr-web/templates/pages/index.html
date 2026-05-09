@@ -13,7 +13,7 @@
                 data-bind:_query
                 placeholder="Filter (e.g. ppid:1 user:root !exit:0) — type for suggestions"
                 class="w-full pl-3 pr-28 py-1.5 rounded bg-gray-900 border border-gray-700 text-gray-200 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono text-sm"
-                data-on:keydown="evt.key === 'Enter' && ($_applied = true, $_showSuggestions = false, $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)); evt.key === 'Escape' && ($_showSuggestions = false)"
+                data-on:keydown="evt.key === 'Enter' && ($_applied = true, $_showSuggestions = false, @get(shspectrRequest($_query, $_live))); evt.key === 'Escape' && ($_showSuggestions = false)"
                 data-on:input="$_applied = false"
                 data-on:focus="$_showSuggestions = true"
                 data-on:blur="setTimeout(() => $_showSuggestions = false, 200)"
@@ -28,13 +28,13 @@
             <button
                 data-show="$_applied"
                 class="absolute right-0 inset-y-0 px-3 flex items-center text-sm font-medium text-red-400 hover:text-white bg-gray-900 hover:bg-red-600 rounded-r border-l border-gray-700 transition-colors"
-                data-on:click="$_query = ''; $_applied = false; $_live ? @get('/api/v1/events/live?q=') : @get('/api/v1/events?q=')"
+                data-on:click="$_query = ''; $_applied = false; @get(shspectrRequest('', $_live))"
             >✕ Clear</button>
             <!-- Apply button (no filter active) -->
             <button
                 data-show="!$_applied"
                 class="absolute right-0 inset-y-0 px-3 flex items-center text-sm font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-r transition-colors"
-                data-on:click="$_applied = true; $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)"
+                data-on:click="$_applied = true; @get(shspectrRequest($_query, $_live))"
             >Apply</button>
 
             <!-- Autocompletion dropdown -->
@@ -45,7 +45,8 @@
                     {% for kw in filter_keywords %}
                     <button
                         class="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-800 flex items-center gap-2"
-                        data-on:click="$_query = $_query.replace(/\S*$/, '') + '{{ kw.keyword }}:'; $_showSuggestions = false; document.querySelector('[data-bind\\\\:_query]').focus()"
+                        data-filter-keyword="{{ kw.keyword }}"
+                        data-on:click="$_query = $_query.replace(/\S*$/, '') + `${evt.currentTarget.dataset.filterKeyword}:`; $_showSuggestions = false; document.querySelector('[data-bind\\\\:_query]').focus()"
                     >
                         <span class="font-mono text-blue-400">{{ kw.keyword }}:</span>
                         <span class="text-gray-400">{{ kw.description }}</span>
@@ -63,7 +64,7 @@
         <button
             role="switch"
             data-attr:aria-checked="$_live"
-            data-on:click="$_live = !$_live; $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)"
+            data-on:click="$_live = !$_live; @get(shspectrRequest($_query, $_live))"
             class="relative w-10 h-6 rounded-full transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
             data-style:background-color="$_live ? '#22c55e' : '#374151'"
         >
@@ -91,7 +92,7 @@
             >✕ Clear</button>
             <button
                 class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs"
-                data-on:click="$_live = false; @get('/api/v1/events?q=' + $_query)"
+                data-on:click="$_live = false; @get(shspectrRequest($_query, false))"
             >← History</button>
         </div>
     </div>

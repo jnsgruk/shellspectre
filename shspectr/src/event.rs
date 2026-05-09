@@ -4,7 +4,7 @@
 //! structured data, with no I/O side effects. This makes them straightforward
 //! to unit test with synthetic data.
 
-use shspectr_common::{EventHeader, ExecEvent, ExitEvent, IoEvent, MAX_ARGV_COUNT};
+use shspectr_common::{EventHeader, EventType, ExecEvent, ExitEvent, IoEvent, MAX_ARGV_COUNT};
 
 /// A parsed exec event with owned string fields, ready for logging or
 /// serialization.
@@ -18,6 +18,7 @@ pub struct ParsedExecEvent {
     pub comm: String,
     pub tty_nr: u32,
     pub cgroup_id: u64,
+    pub execution_id: u64,
     pub filename: String,
     pub argv: Vec<String>,
     pub retval: i64,
@@ -27,6 +28,10 @@ pub struct ParsedExecEvent {
 ///
 /// Returns `None` if the buffer is too short.
 pub fn parse_exec_event(data: &[u8]) -> Option<ParsedExecEvent> {
+    let header = parse_header(data)?;
+    if header.decoded_event_type()? != EventType::Exec {
+        return None;
+    }
     if data.len() < core::mem::size_of::<ExecEvent>() {
         return None;
     }
@@ -50,6 +55,7 @@ pub fn parse_exec_event(data: &[u8]) -> Option<ParsedExecEvent> {
         comm: cstr_from_bytes(&header.comm),
         tty_nr: header.tty_nr,
         cgroup_id: header.cgroup_id,
+        execution_id: header.execution_id,
         filename: cstr_from_bytes(&event.filename),
         argv,
         retval: event.retval,
@@ -65,7 +71,9 @@ pub fn parse_header(data: &[u8]) -> Option<EventHeader> {
     }
 
     // SAFETY: EventHeader is repr(C), we verified the length.
-    Some(unsafe { core::ptr::read_unaligned(data.as_ptr().cast::<EventHeader>()) })
+    let header = unsafe { core::ptr::read_unaligned(data.as_ptr().cast::<EventHeader>()) };
+    header.decoded_event_type()?;
+    Some(header)
 }
 
 /// A parsed exit event with fields ready for logging or serialization.
@@ -79,6 +87,7 @@ pub struct ParsedExitEvent {
     pub comm: String,
     pub tty_nr: u32,
     pub cgroup_id: u64,
+    pub execution_id: u64,
     pub exit_code: i32,
 }
 
@@ -86,6 +95,10 @@ pub struct ParsedExitEvent {
 ///
 /// Returns `None` if the buffer is too short.
 pub fn parse_exit_event(data: &[u8]) -> Option<ParsedExitEvent> {
+    let header = parse_header(data)?;
+    if header.decoded_event_type()? != EventType::Exit {
+        return None;
+    }
     if data.len() < core::mem::size_of::<ExitEvent>() {
         return None;
     }
@@ -104,6 +117,7 @@ pub fn parse_exit_event(data: &[u8]) -> Option<ParsedExitEvent> {
         comm: cstr_from_bytes(&header.comm),
         tty_nr: header.tty_nr,
         cgroup_id: header.cgroup_id,
+        execution_id: header.execution_id,
         exit_code: event.exit_code,
     })
 }
@@ -119,6 +133,7 @@ pub struct ParsedIoEvent {
     pub comm: String,
     pub tty_nr: u32,
     pub cgroup_id: u64,
+    pub execution_id: u64,
     pub fd: u32,
     pub data: Vec<u8>,
     pub count: u64,
@@ -128,6 +143,11 @@ pub struct ParsedIoEvent {
 ///
 /// Returns `None` if the buffer is too short.
 pub fn parse_io_event(data: &[u8]) -> Option<ParsedIoEvent> {
+    let header = parse_header(data)?;
+    match header.decoded_event_type()? {
+        EventType::Read | EventType::Write => {}
+        EventType::Exec | EventType::Exit => return None,
+    }
     if data.len() < core::mem::size_of::<IoEvent>() {
         return None;
     }
@@ -148,6 +168,7 @@ pub fn parse_io_event(data: &[u8]) -> Option<ParsedIoEvent> {
         comm: cstr_from_bytes(&header.comm),
         tty_nr: header.tty_nr,
         cgroup_id: header.cgroup_id,
+        execution_id: header.execution_id,
         fd: event.fd,
         data: event.data[..data_len].to_vec(),
         count: event.count,
@@ -210,6 +231,7 @@ mod tests {
             1000,
             *b"test\0\0\0\0\0\0\0\0\0\0\0\0",
             7,
+            777,
             42,
         );
         let mut event = ExecEvent::zeroed(header);
@@ -247,6 +269,7 @@ mod tests {
         assert_eq!(parsed.comm, "test");
         assert_eq!(parsed.tty_nr, 7);
         assert_eq!(parsed.cgroup_id, 42);
+        assert_eq!(parsed.execution_id, 777);
     }
 
     #[test]
@@ -269,6 +292,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_header_rejects_unknown_event_type() {
+        let mut data = make_exec_event("/bin/true", &["true"], 0);
+        data[0..4].copy_from_slice(&99u32.to_ne_bytes());
+        assert!(parse_header(&data).is_none());
+        assert!(parse_exec_event(&data).is_none());
+    }
+
+    #[test]
+    fn parse_header_rejects_unknown_wire_version() {
+        let mut data = make_exec_event("/bin/true", &["true"], 0);
+        data[4..8].copy_from_slice(&99u32.to_ne_bytes());
+        assert!(parse_header(&data).is_none());
+        assert!(parse_exec_event(&data).is_none());
+    }
+
+    #[test]
+    fn parse_exec_event_rejects_mismatched_header_type() {
+        let mut data = make_exec_event("/bin/true", &["true"], 0);
+        data[0..4].copy_from_slice(&(EventType::Exit as u32).to_ne_bytes());
+        assert!(parse_exec_event(&data).is_none());
+    }
+
+    #[test]
     fn parse_exec_event_no_args() {
         let data = make_exec_event("/bin/true", &[], 0);
         let parsed = parse_exec_event(&data).expect("should parse");
@@ -288,9 +334,10 @@ mod tests {
             0,
             *b"bash\0\0\0\0\0\0\0\0\0\0\0\0",
             7,
+            888,
             42,
         );
-        let event = shspectr_common::ExitEvent { header, exit_code };
+        let event = shspectr_common::ExitEvent::new(header, exit_code);
 
         let ptr = &event as *const shspectr_common::ExitEvent as *const u8;
         unsafe {
@@ -310,6 +357,7 @@ mod tests {
         assert_eq!(parsed.comm, "bash");
         assert_eq!(parsed.tty_nr, 7);
         assert_eq!(parsed.cgroup_id, 42);
+        assert_eq!(parsed.execution_id, 888);
     }
 
     #[test]
@@ -350,6 +398,7 @@ mod tests {
             0,
             *b"cat\0\0\0\0\0\0\0\0\0\0\0\0\0",
             7,
+            999,
             42,
         );
         let mut event = shspectr_common::IoEvent {
@@ -378,6 +427,7 @@ mod tests {
         assert_eq!(parsed.data, b"hello world\n");
         assert_eq!(parsed.count, 12);
         assert_eq!(parsed.comm, "cat");
+        assert_eq!(parsed.execution_id, 999);
     }
 
     #[test]
@@ -403,5 +453,45 @@ mod tests {
     fn parse_io_event_too_short() {
         let data = vec![0u8; 10];
         assert!(parse_io_event(&data).is_none());
+    }
+
+    #[test]
+    fn parse_io_event_data_len_clamped_to_max() {
+        // Build an IoEvent where data_len exceeds MAX_DATA_LEN
+        let header = EventHeader::new(
+            EventType::Write,
+            0,
+            100,
+            1,
+            100,
+            100,
+            1000,
+            1000,
+            0,
+            *b"test\0\0\0\0\0\0\0\0\0\0\0\0",
+            0,
+            0,
+            0,
+        );
+        let mut event = shspectr_common::IoEvent::zeroed(header);
+        // Set data_len to something absurdly large
+        event.data_len = (shspectr_common::MAX_DATA_LEN as u32) + 500;
+        event.fd = 1;
+        // Write some data
+        event.data[0] = b'A';
+        event.data[shspectr_common::MAX_DATA_LEN - 1] = b'Z';
+
+        let ptr = &event as *const shspectr_common::IoEvent as *const u8;
+        let bytes = unsafe {
+            core::slice::from_raw_parts(ptr, core::mem::size_of::<shspectr_common::IoEvent>())
+        }
+        .to_vec();
+
+        let parsed = parse_io_event(&bytes).expect("should parse");
+        assert_eq!(
+            parsed.data.len(),
+            shspectr_common::MAX_DATA_LEN,
+            "data_len should be clamped to MAX_DATA_LEN"
+        );
     }
 }

@@ -17,26 +17,18 @@ mise install          # sets up Rust stable, prek, Go, spread (nightly via cargo
 ```sh
 mise run build-ebpf   # eBPF crate only (nightly, bpf target)
 mise run build        # Everything: eBPF first, then userspace (stable)
-mise run build-web    # Web crate only (downloads Tailwind on first run)
 ```
 
-The eBPF crate must be built before the userspace crate (the binary embeds the compiled BPF object). The `build` task handles this ordering via `depends = ["build-ebpf"]`.
+The eBPF crate must be built before running the userspace collector because `shspectr` loads the compiled eBPF artifact from disk at startup. The `build` task handles this ordering via `depends = ["build-ebpf"]`. If the artifact is missing, `shspectr` fails with an explicit error telling you to run `mise run build-ebpf` or `mise run build`.
 
 ## Running
 
 ```sh
-# Requires root or CAP_BPF + CAP_PERFMON
-sudo mise run run -- run --filter-pty              # Record PTY sessions only
-sudo mise run run -- run --filter-ancestor sshd    # Record sshd descendants
-sudo mise run run -- run                           # Record all processes (stdout sink)
-sudo mise run run -- run --output sqlite           # Record to SQLite database
+# Build and run with SQLite + web UI (requires root or CAP_BPF + CAP_PERFMON)
+sudo mise run dev
 
-# Web UI (standalone, no eBPF needed — reads existing SQLite DB)
-mise run run-web-dev                           # Dev mode (port 3000, ./shspectr.db)
-mise run run-web                               # Via main binary (builds eBPF first)
-
-# Check kernel and BPF capability status
-sudo mise run run -- check
+# Web UI (standalone, no eBPF needed — reads an existing collector-created SQLite DB)
+mise run dev-web                               # Dev mode (port 3000, ./shspectr.db)
 ```
 
 ## Testing
@@ -64,7 +56,19 @@ Located in `shspectr-web/tests/`. HTTP-level tests using reqwest against a real 
 mise run test-system  # Requires LXD; runs with --test-threads=1
 ```
 
-Provisions LXD VMs, builds and deploys shspectr, runs commands via SSH, verifies JSON log output and SQLite contents. Covers exec/exit/IO events, filters, session correlation.
+Provisions a single LXD VM shared across all tests via `LazyLock`, installs `shspectr` once, then runs each test against the same VM. Tests use `TestHarness` for the common start/exercise/stop/collect workflow and typed `Event` structs for assertions.
+
+**Architecture:**
+
+- **Shared VM fixture** (`fixture.rs`): A `LazyLock<Mutex<SharedState>>` provisions one VM on first access and installs artifacts once. All tests reuse it.
+- **Systemd drop-in** (`vm.rs`): The `shspectr-test.service` unit is baked into the base VM image. Tests write a drop-in env file (`/etc/shspectr-test.env`) with extra args — no heredoc or `daemon-reload` at runtime.
+- **In-VM readiness polling** (`shspectr.rs`): A single SSH command runs a polling loop inside the VM, replacing per-iteration SSH round-trips.
+- **Test harness** (`harness.rs`): `TestHarness::capture()` encapsulates start/exercise/stop/collect into one call. Returns typed `Event` structs.
+- **Typed events** (`event.rs`): `Event` struct deserialises the tracing JSON format (fields nested under `"fields"`). Replaces brittle `line.contains()` matching.
+
+SSH helpers use isolated `known_hosts` state so tests do not depend on or modify the user's real SSH configuration. Test VMs are cleaned up via RAII and stale `shspectr-test-*` instances are deleted opportunistically before provisioning. The smoke test provisions its own VM independently to validate the provisioning code path.
+
+The standalone web server does not create the database. Start the collector with `--output sqlite` first so the DB schema exists before running `shspectr-web`.
 
 The eBPF crate cannot be unit tested (`#![no_std]`, BPF target). All BPF logic is tested through system tests.
 
@@ -83,7 +87,7 @@ Hooks:
 - `check-added-large-files` — prevent large binaries
 - `cargo fmt --check` — formatting
 - `cargo clippy` — linting (pedantic, zero warnings)
-- `check-file-length` — max 750 lines per .rs file
+
 
 ### Formatting and Linting
 

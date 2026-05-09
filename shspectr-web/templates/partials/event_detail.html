@@ -1,11 +1,11 @@
 <tr id="detail-{{ detail.id }}" class="bg-gray-900/30">
-    <td colspan="5" class="px-3 py-4 max-w-0 w-full overflow-hidden">
+    <td colspan="6" class="px-3 py-4 max-w-0 w-full overflow-hidden">
         <div class="border border-gray-700 rounded-lg p-4 ml-6">
             <div class="flex items-center justify-between mb-3">
                 <h3 class="text-sm font-semibold text-gray-300">Details</h3>
                 <button
                     class="text-xs text-gray-500 hover:text-gray-300"
-                    data-on:click="document.getElementById('detail-{{ detail.id }}').innerHTML = '<td colspan=\'5\'></td>'; document.getElementById('detail-{{ detail.id }}').classList.add('hidden')"
+                    data-on:click="document.getElementById('detail-{{ detail.id }}').innerHTML = '<td colspan=\'6\'></td>'; document.getElementById('detail-{{ detail.id }}').classList.add('hidden')"
                 >✕ Close</button>
             </div>
 
@@ -14,73 +14,80 @@
                 <div>
                     <span class="text-gray-500">Session:</span>
                     <span class="text-gray-300 font-mono ml-1 cursor-pointer hover:text-blue-400 hover:underline underline-offset-2 decoration-dotted transition-colors"
-                          title="Click to filter by session:{{ detail.session_id }}"
-                          data-on:click="
-                              $_query = $_query.replace(/\bsession:\S*/g, '').trim() + ' session:{{ detail.session_id }}';
-                              $_query = $_query.trim();
-                              $_applied = true;
-                              $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)
-                          "
+                           title="Click to filter by session:{{ detail.session_id }}"
+                           data-filter-key="session"
+                           data-filter-value="{{ detail.session_id }}"
+                           data-replace-only="true"
+                           data-on:click="
+                                $_query = shspectrBuildQuery($_query, evt.currentTarget.dataset.filterKey, evt.currentTarget.dataset.filterValue, evt.currentTarget.dataset.replaceOnly === 'true');
+                                $_applied = true;
+                                @get(shspectrRequest($_query, $_live))
+                            "
                     >{{ detail.session_id }}</span>
                 </div>
                 <div>
                     <span class="text-gray-500">PID:</span>
                     <span class="text-gray-300 font-mono ml-1 cursor-pointer hover:text-blue-400 hover:underline underline-offset-2 decoration-dotted transition-colors"
-                          title="Click to filter by pid:{{ detail.pid }}"
-                          data-on:click="
-                              $_query = $_query.replace(/\bpid:\S*/g, '').trim() + ' pid:{{ detail.pid }}';
-                              $_query = $_query.trim();
-                              $_applied = true;
-                              $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)
-                          "
+                           title="Click to filter by pid:{{ detail.pid }}"
+                           data-filter-key="pid"
+                           data-filter-value="{{ detail.pid }}"
+                           data-on:click="
+                                $_query = shspectrBuildQuery($_query, evt.currentTarget.dataset.filterKey, evt.currentTarget.dataset.filterValue);
+                                $_applied = true;
+                                @get(shspectrRequest($_query, $_live))
+                            "
                     >{{ detail.pid }}</span>
                 </div>
                 <div>
                     <span class="text-gray-500">PPID:</span>
                     <span class="text-gray-300 font-mono ml-1 cursor-pointer hover:text-blue-400 hover:underline underline-offset-2 decoration-dotted transition-colors"
-                          title="Click to filter by ppid:{{ detail.ppid }}"
-                          data-on:click="
-                              $_query = $_query.replace(/\bppid:\S*/g, '').trim() + ' ppid:{{ detail.ppid }}';
-                              $_query = $_query.trim();
-                              $_applied = true;
-                              $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)
-                          "
+                           title="Click to filter by ppid:{{ detail.ppid }}"
+                           data-filter-key="ppid"
+                           data-filter-value="{{ detail.ppid }}"
+                           data-on:click="
+                                $_query = shspectrBuildQuery($_query, evt.currentTarget.dataset.filterKey, evt.currentTarget.dataset.filterValue);
+                                $_applied = true;
+                                @get(shspectrRequest($_query, $_live))
+                            "
                     >{{ detail.ppid }}</span>
                 </div>
                 <div>
                     <span class="text-gray-500">UID:</span>
                     <span class="text-gray-300 font-mono ml-1 cursor-pointer hover:text-blue-400 hover:underline underline-offset-2 decoration-dotted transition-colors"
-                          title="Click to filter by user:{{ detail.uid_raw }}"
-                          data-on:click="
-                              $_query = $_query.replace(/\buser:\S*/g, '').trim() + ' user:{{ detail.uid_raw }}';
-                              $_query = $_query.trim();
-                              $_applied = true;
-                              $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)
-                          "
+                           title="Click to filter by user:{{ detail.uid_raw }}"
+                           data-filter-key="user"
+                           data-filter-value="{{ detail.uid_raw }}"
+                           data-on:click="
+                                $_query = shspectrBuildQuery($_query, evt.currentTarget.dataset.filterKey, evt.currentTarget.dataset.filterValue);
+                                $_applied = true;
+                                @get(shspectrRequest($_query, $_live))
+                            "
                     >{{ detail.uid }}</span>
                 </div>
                 <div>
                     <span class="text-gray-500">EUID:</span>
                     <span class="text-gray-300 font-mono ml-1 cursor-pointer hover:text-blue-400 hover:underline underline-offset-2 decoration-dotted transition-colors"
-                          title="Click to filter by euid:{{ detail.euid_raw }}"
-                          data-on:click="
-                              $_query = $_query.replace(/\beuid:\S*/g, '').trim() + ' euid:{{ detail.euid_raw }}';
-                              $_query = $_query.trim();
-                              $_applied = true;
-                              $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)
-                          "
+                           title="Click to filter by euid:{{ detail.euid_raw }}"
+                           data-filter-key="euid"
+                           data-filter-value="{{ detail.euid_raw }}"
+                           data-on:click="
+                                $_query = shspectrBuildQuery($_query, evt.currentTarget.dataset.filterKey, evt.currentTarget.dataset.filterValue);
+                                $_applied = true;
+                                @get(shspectrRequest($_query, $_live))
+                            "
                     >{{ detail.euid }}</span>
                 </div>
                 <div>
                     <span class="text-gray-500">GID:</span>
                     <span class="text-gray-300 font-mono ml-1 cursor-pointer hover:text-blue-400 hover:underline underline-offset-2 decoration-dotted transition-colors"
-                          title="Click to filter by gid:{{ detail.gid }}"
-                          data-on:click="
-                              $_query = $_query.replace(/\bgid:\S*/g, '').trim() + ' gid:{{ detail.gid }}';
-                              $_query = $_query.trim();
-                              $_applied = true;
-                              $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)
-                          "
+                           title="Click to filter by gid:{{ detail.gid }}"
+                           data-filter-key="gid"
+                           data-filter-value="{{ detail.gid }}"
+                           data-on:click="
+                                $_query = shspectrBuildQuery($_query, evt.currentTarget.dataset.filterKey, evt.currentTarget.dataset.filterValue);
+                                $_applied = true;
+                                @get(shspectrRequest($_query, $_live))
+                            "
                     >{{ detail.gid }}</span>
                 </div>
                 <div>
@@ -88,13 +95,14 @@
                     {% match detail.tty_nr_raw %}
                     {% when Some with (nr) %}
                     <span class="text-gray-300 font-mono ml-1 cursor-pointer hover:text-blue-400 hover:underline underline-offset-2 decoration-dotted transition-colors"
-                          title="Click to filter by tty:{{ nr }}"
-                          data-on:click="
-                              $_query = $_query.replace(/\btty:\S*/g, '').trim() + ' tty:{{ nr }}';
-                              $_query = $_query.trim();
-                              $_applied = true;
-                              $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)
-                          "
+                           title="Click to filter by tty:{{ nr }}"
+                           data-filter-key="tty"
+                           data-filter-value="{{ nr }}"
+                           data-on:click="
+                                $_query = shspectrBuildQuery($_query, evt.currentTarget.dataset.filterKey, evt.currentTarget.dataset.filterValue);
+                                $_applied = true;
+                                @get(shspectrRequest($_query, $_live))
+                            "
                     >{{ detail.tty }}</span>
                     {% when None %}
                     <span class="text-gray-300 font-mono ml-1">{{ detail.tty }}</span>
@@ -105,13 +113,14 @@
                     {% match detail.exit_code_raw %}
                     {% when Some with (code) %}
                     <span class="text-gray-300 font-mono ml-1 cursor-pointer hover:text-blue-400 hover:underline underline-offset-2 decoration-dotted transition-colors"
-                          title="Click to filter by exit:{{ code }}"
-                          data-on:click="
-                              $_query = $_query.replace(/\bexit:\S*/g, '').trim() + ' exit:{{ code }}';
-                              $_query = $_query.trim();
-                              $_applied = true;
-                              $_live ? @get('/api/v1/events/live?q=' + $_query) : @get('/api/v1/events?q=' + $_query)
-                          "
+                           title="Click to filter by exit:{{ code }}"
+                           data-filter-key="exit"
+                           data-filter-value="{{ code }}"
+                           data-on:click="
+                                $_query = shspectrBuildQuery($_query, evt.currentTarget.dataset.filterKey, evt.currentTarget.dataset.filterValue);
+                                $_applied = true;
+                                @get(shspectrRequest($_query, $_live))
+                            "
                     >{{ detail.exit_code }}</span>
                     {% when None %}
                     <span class="text-gray-300 font-mono ml-1">{{ detail.exit_code }}</span>

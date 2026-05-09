@@ -17,8 +17,8 @@ fn seed_events(pool: &DbPool, count: u32) {
     for i in 0..count {
         conn.execute(
             "INSERT INTO events \
-             (session_id, event_type, timestamp, pid, ppid, uid, gid, euid, comm, filename, argv, exit_code) \
-             VALUES ('s1', 'exec', datetime('now'), ?1, 1, 1000, 1000, 1000, ?2, '/usr/bin/cmd', ?3, 0)",
+             (session_id, event_type, timestamp, execution_id, pid, ppid, uid, gid, euid, comm, filename, argv, exit_code) \
+             VALUES ('s1', 'exec', datetime('now'), ?1, ?1, 1, 1000, 1000, 1000, ?2, '/usr/bin/cmd', ?3, 0)",
             rusqlite::params![100 + i, format!("cmd{i}"), format!(r#"["cmd{i}"]"#)],
         )
         .expect("insert event");
@@ -50,6 +50,32 @@ async fn index_page_empty_state() {
     let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
     let body = resp.text().await.unwrap();
     assert!(body.contains("No events found"), "should show empty state");
+}
+
+#[tokio::test]
+async fn index_page_uses_data_attributes_for_request_urls() {
+    let (addr, pool) = support::start_test_server().await;
+    seed_events(&pool, 30);
+
+    let resp = reqwest::get(format!("http://{addr}/?q=s'1")).await.unwrap();
+    let body = resp.text().await.unwrap();
+
+    assert!(
+        body.contains("data-sort-url="),
+        "should expose sort URLs via data attributes"
+    );
+    assert!(
+        body.contains("data-next-url="),
+        "should expose pagination URL via data attributes"
+    );
+    assert!(
+        body.contains("data-filter-keyword="),
+        "should expose autocomplete keywords via data attributes"
+    );
+    assert!(
+        !body.contains("data-on:click=\"@get('"),
+        "request URLs should not be embedded in inline JS strings"
+    );
 }
 
 #[tokio::test]
@@ -187,8 +213,8 @@ async fn api_events_negation_glob_url_encoded() {
     for (i, comm) in ["git", "git", "ps", "bash"].iter().enumerate() {
         conn.execute(
             "INSERT INTO events \
-             (session_id, event_type, timestamp, pid, ppid, uid, gid, euid, comm, filename, argv, exit_code) \
-             VALUES ('s1', 'exec', datetime('now'), ?1, 1, 1000, 1000, 1000, ?2, '/usr/bin/cmd', '[]', 0)",
+             (session_id, event_type, timestamp, execution_id, pid, ppid, uid, gid, euid, comm, filename, argv, exit_code) \
+             VALUES ('s1', 'exec', datetime('now'), ?1, ?1, 1, 1000, 1000, 1000, ?2, '/usr/bin/cmd', '[]', 0)",
             rusqlite::params![100 + i as u32, comm],
         )
         .expect("insert event");

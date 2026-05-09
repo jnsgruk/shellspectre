@@ -1,6 +1,7 @@
 {% if paginated.has_next %}
 <div id="load-more-sentinel"
-    data-on-intersect__once="@get('{{ nav.page_url(paginated.page + 1) }}&append=true')"
+    data-next-url="{{ nav.page_url(paginated.page + 1) }}&append=true"
+    data-on-intersect__once="@get(el.dataset.nextUrl)"
     class="py-8 text-center"
     data-show="!$_live"
 >

@@ -3,79 +3,12 @@
 use super::*;
 
 use anyhow::Result;
-use rusqlite::params;
 
 use crate::domain::filter::EventFilter;
 use crate::domain::listing::ListRequest;
 use crate::infrastructure::database::create_test_pool;
 
-fn insert_test_session(conn: &rusqlite::Connection, id: &str) {
-    conn.execute(
-        "INSERT INTO sessions (id, started_at, root_pid, uid, euid) \
-         VALUES (?1, datetime('now'), 100, 1000, 1000)",
-        params![id],
-    )
-    .expect("insert test session");
-}
-
-fn insert_test_exec(
-    conn: &rusqlite::Connection,
-    session_id: &str,
-    pid: u32,
-    comm: &str,
-    filename: &str,
-    argv: &str,
-    exit_code: Option<i32>,
-) {
-    conn.execute(
-        "INSERT INTO events \
-         (session_id, event_type, timestamp, pid, ppid, uid, gid, euid, comm, filename, argv, exit_code) \
-         VALUES (?1, 'exec', datetime('now'), ?2, 1, 1000, 1000, 1000, ?3, ?4, ?5, ?6)",
-        params![session_id, pid, comm, filename, argv, exit_code],
-    )
-    .expect("insert test exec event");
-}
-
-fn insert_test_io(
-    conn: &rusqlite::Connection,
-    session_id: &str,
-    pid: u32,
-    event_type: &str,
-    fd: u32,
-    data: &str,
-) {
-    conn.execute(
-        "INSERT INTO events \
-         (session_id, event_type, timestamp, pid, ppid, uid, gid, euid, fd, data, data_len, byte_count) \
-         VALUES (?1, ?2, datetime('now'), ?3, 1, 1000, 1000, 1000, ?4, ?5, ?6, ?7)",
-        params![session_id, event_type, pid, fd, data, data.len(), data.len()],
-    )
-    .expect("insert test io event");
-}
-
-/// Extended helper that accepts ppid, gid, euid, and tty_nr.
-fn insert_test_exec_full(
-    conn: &rusqlite::Connection,
-    session_id: &str,
-    pid: u32,
-    ppid: u32,
-    uid: u32,
-    gid: u32,
-    euid: u32,
-    tty_nr: Option<u32>,
-    comm: &str,
-    filename: &str,
-    argv: &str,
-    exit_code: Option<i32>,
-) {
-    conn.execute(
-        "INSERT INTO events \
-         (session_id, event_type, timestamp, pid, ppid, uid, gid, euid, tty_nr, comm, filename, argv, exit_code) \
-         VALUES (?1, 'exec', datetime('now'), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        params![session_id, pid, ppid, uid, gid, euid, tty_nr, comm, filename, argv, exit_code],
-    )
-    .expect("insert test exec event (full)");
-}
+use super::test_fixtures::{ExecEventRow, IoEventRow, SessionRow};
 
 #[test]
 fn list_returns_exec_events_only() -> Result<()> {
@@ -84,9 +17,13 @@ fn list_returns_exec_events_only() -> Result<()> {
 
     {
         let conn = pool.get()?;
-        insert_test_session(&conn, "s1");
-        insert_test_exec(&conn, "s1", 100, "ls", "/usr/bin/ls", "[\"ls\"]", Some(0));
-        insert_test_io(&conn, "s1", 100, "write", 1, "hello");
+        SessionRow::new("s1").insert(&conn);
+        ExecEventRow::new("s1")
+            .comm("ls")
+            .filename("/usr/bin/ls")
+            .argv("[\"ls\"]")
+            .insert(&conn);
+        IoEventRow::new("s1").data("hello").insert(&conn);
     }
 
     let page = repo.list(&ListRequest::default(), &EventFilter::default())?;
@@ -103,17 +40,13 @@ fn list_pagination() -> Result<()> {
 
     {
         let conn = pool.get()?;
-        insert_test_session(&conn, "s1");
+        SessionRow::new("s1").insert(&conn);
         for i in 0..10 {
-            insert_test_exec(
-                &conn,
-                "s1",
-                100 + i,
-                &format!("cmd{i}"),
-                "/usr/bin/cmd",
-                "[]",
-                Some(0),
-            );
+            ExecEventRow::new("s1")
+                .pid(100 + i)
+                .comm(&format!("cmd{i}"))
+                .filename("/usr/bin/cmd")
+                .insert(&conn);
         }
     }
 
@@ -144,10 +77,21 @@ fn list_filter_by_comm() -> Result<()> {
 
     {
         let conn = pool.get()?;
-        insert_test_session(&conn, "s1");
-        insert_test_exec(&conn, "s1", 100, "bash", "/usr/bin/bash", "[]", Some(0));
-        insert_test_exec(&conn, "s1", 101, "ls", "/usr/bin/ls", "[]", Some(0));
-        insert_test_exec(&conn, "s1", 102, "cat", "/usr/bin/cat", "[]", Some(0));
+        SessionRow::new("s1").insert(&conn);
+        ExecEventRow::new("s1")
+            .comm("bash")
+            .filename("/usr/bin/bash")
+            .insert(&conn);
+        ExecEventRow::new("s1")
+            .pid(101)
+            .comm("ls")
+            .filename("/usr/bin/ls")
+            .insert(&conn);
+        ExecEventRow::new("s1")
+            .pid(102)
+            .comm("cat")
+            .filename("/usr/bin/cat")
+            .insert(&conn);
     }
 
     let filter = EventFilter::parse("comm:bash");
@@ -164,9 +108,16 @@ fn list_filter_by_comm_glob() -> Result<()> {
 
     {
         let conn = pool.get()?;
-        insert_test_session(&conn, "s1");
-        insert_test_exec(&conn, "s1", 100, "bash", "/usr/bin/bash", "[]", Some(0));
-        insert_test_exec(&conn, "s1", 101, "sh", "/usr/bin/sh", "[]", Some(0));
+        SessionRow::new("s1").insert(&conn);
+        ExecEventRow::new("s1")
+            .comm("bash")
+            .filename("/usr/bin/bash")
+            .insert(&conn);
+        ExecEventRow::new("s1")
+            .pid(101)
+            .comm("sh")
+            .filename("/usr/bin/sh")
+            .insert(&conn);
     }
 
     let filter = EventFilter::parse("comm:*sh");
@@ -182,9 +133,18 @@ fn list_filter_by_exit_code() -> Result<()> {
 
     {
         let conn = pool.get()?;
-        insert_test_session(&conn, "s1");
-        insert_test_exec(&conn, "s1", 100, "cmd1", "/cmd1", "[]", Some(0));
-        insert_test_exec(&conn, "s1", 101, "cmd2", "/cmd2", "[]", Some(1));
+        SessionRow::new("s1").insert(&conn);
+        ExecEventRow::new("s1")
+            .comm("cmd1")
+            .filename("/cmd1")
+            .exit_code(0)
+            .insert(&conn);
+        ExecEventRow::new("s1")
+            .pid(101)
+            .comm("cmd2")
+            .filename("/cmd2")
+            .exit_code(1)
+            .insert(&conn);
     }
 
     let filter = EventFilter::parse("exit:1");
@@ -201,10 +161,17 @@ fn list_filter_by_session_prefix() -> Result<()> {
 
     {
         let conn = pool.get()?;
-        insert_test_session(&conn, "ox_abc123");
-        insert_test_session(&conn, "ox_def456");
-        insert_test_exec(&conn, "ox_abc123", 100, "ls", "/ls", "[]", Some(0));
-        insert_test_exec(&conn, "ox_def456", 101, "cat", "/cat", "[]", Some(0));
+        SessionRow::new("ox_abc123").insert(&conn);
+        SessionRow::new("ox_def456").insert(&conn);
+        ExecEventRow::new("ox_abc123")
+            .comm("ls")
+            .filename("/ls")
+            .insert(&conn);
+        ExecEventRow::new("ox_def456")
+            .pid(101)
+            .comm("cat")
+            .filename("/cat")
+            .insert(&conn);
     }
 
     let filter = EventFilter::parse("session:ox_abc");
@@ -221,9 +188,16 @@ fn list_filter_by_pid() -> Result<()> {
 
     {
         let conn = pool.get()?;
-        insert_test_session(&conn, "s1");
-        insert_test_exec(&conn, "s1", 100, "ls", "/ls", "[]", Some(0));
-        insert_test_exec(&conn, "s1", 200, "cat", "/cat", "[]", Some(0));
+        SessionRow::new("s1").insert(&conn);
+        ExecEventRow::new("s1")
+            .comm("ls")
+            .filename("/ls")
+            .insert(&conn);
+        ExecEventRow::new("s1")
+            .pid(200)
+            .comm("cat")
+            .filename("/cat")
+            .insert(&conn);
     }
 
     let filter = EventFilter::parse("pid:200");
@@ -240,17 +214,18 @@ fn list_filter_bare_text() -> Result<()> {
 
     {
         let conn = pool.get()?;
-        insert_test_session(&conn, "s1");
-        insert_test_exec(
-            &conn,
-            "s1",
-            100,
-            "cargo",
-            "/usr/bin/cargo",
-            "[\"cargo\",\"build\"]",
-            Some(0),
-        );
-        insert_test_exec(&conn, "s1", 101, "ls", "/usr/bin/ls", "[\"ls\"]", Some(0));
+        SessionRow::new("s1").insert(&conn);
+        ExecEventRow::new("s1")
+            .comm("cargo")
+            .filename("/usr/bin/cargo")
+            .argv("[\"cargo\",\"build\"]")
+            .insert(&conn);
+        ExecEventRow::new("s1")
+            .pid(101)
+            .comm("ls")
+            .filename("/usr/bin/ls")
+            .argv("[\"ls\"]")
+            .insert(&conn);
     }
 
     let filter = EventFilter::parse("build");
@@ -278,16 +253,12 @@ fn get_detail_found() -> Result<()> {
 
     let id = {
         let conn = pool.get()?;
-        insert_test_session(&conn, "s1");
-        insert_test_exec(
-            &conn,
-            "s1",
-            100,
-            "cat",
-            "/usr/bin/cat",
-            "[\"cat\",\"file.txt\"]",
-            Some(0),
-        );
+        SessionRow::new("s1").insert(&conn);
+        ExecEventRow::new("s1")
+            .comm("cat")
+            .filename("/usr/bin/cat")
+            .argv("[\"cat\",\"file.txt\"]")
+            .insert(&conn);
         conn.query_row("SELECT id FROM events LIMIT 1", [], |r| r.get::<_, i64>(0))?
     };
 
@@ -295,6 +266,7 @@ fn get_detail_found() -> Result<()> {
     assert!(detail.is_some(), "should find the event");
     let detail = detail.expect("checked above");
     assert_eq!(detail.summary.comm.as_deref(), Some("cat"));
+    assert_eq!(detail.summary.execution_id, 100);
     assert_eq!(detail.gid, 1000);
     Ok(())
 }
@@ -316,13 +288,31 @@ fn get_detail_includes_io_data() -> Result<()> {
 
     let id = {
         let conn = pool.get()?;
-        insert_test_session(&conn, "s1");
-        insert_test_exec(&conn, "s1", 100, "cat", "/cat", "[]", Some(0));
-        insert_test_io(&conn, "s1", 100, "read", 0, "input data");
-        insert_test_io(&conn, "s1", 100, "write", 1, "output line 1\n");
-        insert_test_io(&conn, "s1", 100, "write", 2, "error output\n");
+        SessionRow::new("s1").insert(&conn);
+        ExecEventRow::new("s1")
+            .comm("cat")
+            .filename("/cat")
+            .insert(&conn);
+        IoEventRow::new("s1")
+            .event_type("read")
+            .fd(0)
+            .data("input data")
+            .insert(&conn);
+        IoEventRow::new("s1")
+            .event_type("write")
+            .fd(1)
+            .data("output line 1\n")
+            .insert(&conn);
+        IoEventRow::new("s1")
+            .event_type("write")
+            .fd(2)
+            .data("error output\n")
+            .insert(&conn);
         // I/O for a different PID — should NOT appear.
-        insert_test_io(&conn, "s1", 200, "write", 1, "other process");
+        IoEventRow::new("s1")
+            .pid(200)
+            .data("other process")
+            .insert(&conn);
         conn.query_row(
             "SELECT id FROM events WHERE event_type = 'exec' LIMIT 1",
             [],
@@ -342,15 +332,71 @@ fn get_detail_includes_io_data() -> Result<()> {
 }
 
 #[test]
+fn get_detail_scopes_io_to_matching_execution_id() -> Result<()> {
+    let pool = create_test_pool()?;
+    let repo = SqlEventRepository::new(pool.clone());
+
+    let id = {
+        let conn = pool.get()?;
+        SessionRow::new("s1").insert(&conn);
+        ExecEventRow::new("s1")
+            .pid(100)
+            .execution_id(10)
+            .comm("bash")
+            .insert(&conn);
+        ExecEventRow::new("s1")
+            .pid(100)
+            .execution_id(11)
+            .comm("python")
+            .insert(&conn);
+        IoEventRow::new("s1")
+            .pid(100)
+            .execution_id(10)
+            .event_type("write")
+            .fd(1)
+            .data("first exec")
+            .insert(&conn);
+        IoEventRow::new("s1")
+            .pid(100)
+            .execution_id(11)
+            .event_type("write")
+            .fd(1)
+            .data("second exec")
+            .insert(&conn);
+        conn.query_row(
+            "SELECT id FROM events WHERE event_type = 'exec' AND execution_id = 11 LIMIT 1",
+            [],
+            |r| r.get::<_, i64>(0),
+        )?
+    };
+
+    let detail = repo.get_detail(id)?.expect("event should exist");
+    assert_eq!(detail.stdout_data.len(), 1);
+    assert_eq!(detail.stdout_data[0].data, "second exec");
+    Ok(())
+}
+
+#[test]
 fn list_since_returns_new_events() -> Result<()> {
     let pool = create_test_pool()?;
     let repo = SqlEventRepository::new(pool.clone());
 
     let conn = pool.get()?;
-    insert_test_session(&conn, "s1");
-    insert_test_exec(&conn, "s1", 100, "ls", "/ls", "[]", Some(0));
-    insert_test_exec(&conn, "s1", 101, "cat", "/cat", "[]", Some(0));
-    insert_test_exec(&conn, "s1", 102, "pwd", "/pwd", "[]", Some(0));
+    SessionRow::new("s1").insert(&conn);
+    ExecEventRow::new("s1")
+        .comm("ls")
+        .filename("/ls")
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(101)
+        .comm("cat")
+        .filename("/cat")
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(102)
+        .comm("pwd")
+        .filename("/pwd")
+        .insert(&conn);
     drop(conn);
 
     // Get all events to find the first ID.
@@ -373,9 +419,16 @@ fn list_since_respects_filter() -> Result<()> {
     let repo = SqlEventRepository::new(pool.clone());
 
     let conn = pool.get()?;
-    insert_test_session(&conn, "s1");
-    insert_test_exec(&conn, "s1", 100, "ls", "/ls", "[]", Some(0));
-    insert_test_exec(&conn, "s1", 101, "bash", "/bash", "[]", Some(0));
+    SessionRow::new("s1").insert(&conn);
+    ExecEventRow::new("s1")
+        .comm("ls")
+        .filename("/ls")
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(101)
+        .comm("bash")
+        .filename("/bash")
+        .insert(&conn);
     drop(conn);
 
     let filter = EventFilter::parse("comm:bash");
@@ -391,8 +444,11 @@ fn list_since_empty_when_no_new() -> Result<()> {
     let repo = SqlEventRepository::new(pool.clone());
 
     let conn = pool.get()?;
-    insert_test_session(&conn, "s1");
-    insert_test_exec(&conn, "s1", 100, "ls", "/ls", "[]", Some(0));
+    SessionRow::new("s1").insert(&conn);
+    ExecEventRow::new("s1")
+        .comm("ls")
+        .filename("/ls")
+        .insert(&conn);
     drop(conn);
 
     let max = repo.max_event_id()?;
@@ -415,9 +471,16 @@ fn max_event_id_with_data() -> Result<()> {
     let repo = SqlEventRepository::new(pool.clone());
 
     let conn = pool.get()?;
-    insert_test_session(&conn, "s1");
-    insert_test_exec(&conn, "s1", 100, "ls", "/ls", "[]", Some(0));
-    insert_test_exec(&conn, "s1", 101, "cat", "/cat", "[]", Some(0));
+    SessionRow::new("s1").insert(&conn);
+    ExecEventRow::new("s1")
+        .comm("ls")
+        .filename("/ls")
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(101)
+        .comm("cat")
+        .filename("/cat")
+        .insert(&conn);
     drop(conn);
 
     let max = repo.max_event_id()?;
@@ -431,35 +494,18 @@ fn filter_by_ppid() -> Result<()> {
     let repo = SqlEventRepository::new(pool.clone());
 
     let conn = pool.get()?;
-    insert_test_session(&conn, "s1");
-    insert_test_exec_full(
-        &conn,
-        "s1",
-        100,
-        1,
-        1000,
-        1000,
-        1000,
-        None,
-        "ls",
-        "/ls",
-        "[]",
-        Some(0),
-    );
-    insert_test_exec_full(
-        &conn,
-        "s1",
-        101,
-        2,
-        1000,
-        1000,
-        1000,
-        None,
-        "cat",
-        "/cat",
-        "[]",
-        Some(0),
-    );
+    SessionRow::new("s1").insert(&conn);
+    ExecEventRow::new("s1")
+        .ppid(1)
+        .comm("ls")
+        .filename("/ls")
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(101)
+        .ppid(2)
+        .comm("cat")
+        .filename("/cat")
+        .insert(&conn);
     drop(conn);
 
     let filter = EventFilter::parse("ppid:1");
@@ -475,35 +521,18 @@ fn filter_by_gid() -> Result<()> {
     let repo = SqlEventRepository::new(pool.clone());
 
     let conn = pool.get()?;
-    insert_test_session(&conn, "s1");
-    insert_test_exec_full(
-        &conn,
-        "s1",
-        100,
-        1,
-        1000,
-        1000,
-        1000,
-        None,
-        "ls",
-        "/ls",
-        "[]",
-        Some(0),
-    );
-    insert_test_exec_full(
-        &conn,
-        "s1",
-        101,
-        1,
-        1000,
-        2000,
-        1000,
-        None,
-        "cat",
-        "/cat",
-        "[]",
-        Some(0),
-    );
+    SessionRow::new("s1").insert(&conn);
+    ExecEventRow::new("s1")
+        .gid(1000)
+        .comm("ls")
+        .filename("/ls")
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(101)
+        .gid(2000)
+        .comm("cat")
+        .filename("/cat")
+        .insert(&conn);
     drop(conn);
 
     let filter = EventFilter::parse("gid:2000");
@@ -519,35 +548,17 @@ fn filter_by_tty() -> Result<()> {
     let repo = SqlEventRepository::new(pool.clone());
 
     let conn = pool.get()?;
-    insert_test_session(&conn, "s1");
-    insert_test_exec_full(
-        &conn,
-        "s1",
-        100,
-        1,
-        1000,
-        1000,
-        1000,
-        Some(34816),
-        "ls",
-        "/ls",
-        "[]",
-        Some(0),
-    );
-    insert_test_exec_full(
-        &conn,
-        "s1",
-        101,
-        1,
-        1000,
-        1000,
-        1000,
-        None,
-        "cat",
-        "/cat",
-        "[]",
-        Some(0),
-    );
+    SessionRow::new("s1").insert(&conn);
+    ExecEventRow::new("s1")
+        .tty_nr(34816)
+        .comm("ls")
+        .filename("/ls")
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(101)
+        .comm("cat")
+        .filename("/cat")
+        .insert(&conn);
     drop(conn);
 
     let filter = EventFilter::parse("tty:34816");
@@ -563,9 +574,16 @@ fn filter_by_file_glob() -> Result<()> {
     let repo = SqlEventRepository::new(pool.clone());
 
     let conn = pool.get()?;
-    insert_test_session(&conn, "s1");
-    insert_test_exec(&conn, "s1", 100, "ls", "/usr/bin/ls", "[]", Some(0));
-    insert_test_exec(&conn, "s1", 101, "cat", "/usr/sbin/cat", "[]", Some(0));
+    SessionRow::new("s1").insert(&conn);
+    ExecEventRow::new("s1")
+        .comm("ls")
+        .filename("/usr/bin/ls")
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(101)
+        .comm("cat")
+        .filename("/usr/sbin/cat")
+        .insert(&conn);
     drop(conn);
 
     let filter = EventFilter::parse("file:/usr/bin/*");
@@ -576,14 +594,62 @@ fn filter_by_file_glob() -> Result<()> {
 }
 
 #[test]
+fn filter_file_treats_percent_and_underscore_as_literals() -> Result<()> {
+    let pool = create_test_pool()?;
+    let repo = SqlEventRepository::new(pool.clone());
+
+    let conn = pool.get()?;
+    SessionRow::new("s1").insert(&conn);
+    ExecEventRow::new("s1")
+        .filename("/tmp/a_b")
+        .comm("under")
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(101)
+        .filename("/tmp/acb")
+        .comm("wild")
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(102)
+        .filename("/tmp/100%")
+        .comm("percent")
+        .insert(&conn);
+    drop(conn);
+
+    let underscore = repo.list(
+        &ListRequest::default(),
+        &EventFilter::parse("file:/tmp/a_b"),
+    )?;
+    assert_eq!(underscore.items.len(), 1);
+    assert_eq!(underscore.items[0].comm.as_deref(), Some("under"));
+
+    let percent = repo.list(
+        &ListRequest::default(),
+        &EventFilter::parse("file:/tmp/100%"),
+    )?;
+    assert_eq!(percent.items.len(), 1);
+    assert_eq!(percent.items[0].comm.as_deref(), Some("percent"));
+    Ok(())
+}
+
+#[test]
 fn filter_negation_exit() -> Result<()> {
     let pool = create_test_pool()?;
     let repo = SqlEventRepository::new(pool.clone());
 
     let conn = pool.get()?;
-    insert_test_session(&conn, "s1");
-    insert_test_exec(&conn, "s1", 100, "ok", "/ok", "[]", Some(0));
-    insert_test_exec(&conn, "s1", 101, "fail", "/fail", "[]", Some(1));
+    SessionRow::new("s1").insert(&conn);
+    ExecEventRow::new("s1")
+        .comm("ok")
+        .filename("/ok")
+        .exit_code(0)
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(101)
+        .comm("fail")
+        .filename("/fail")
+        .exit_code(1)
+        .insert(&conn);
     drop(conn);
 
     let filter = EventFilter::parse("!exit:0");
@@ -599,9 +665,16 @@ fn filter_negation_comm() -> Result<()> {
     let repo = SqlEventRepository::new(pool.clone());
 
     let conn = pool.get()?;
-    insert_test_session(&conn, "s1");
-    insert_test_exec(&conn, "s1", 100, "bash", "/bash", "[]", Some(0));
-    insert_test_exec(&conn, "s1", 101, "ls", "/ls", "[]", Some(0));
+    SessionRow::new("s1").insert(&conn);
+    ExecEventRow::new("s1")
+        .comm("bash")
+        .filename("/bash")
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(101)
+        .comm("ls")
+        .filename("/ls")
+        .insert(&conn);
     drop(conn);
 
     let filter = EventFilter::parse("!comm:bash");
@@ -617,35 +690,22 @@ fn filter_by_user_name() -> Result<()> {
     let repo = SqlEventRepository::new(pool.clone());
 
     let conn = pool.get()?;
-    insert_test_session(&conn, "s1");
-    insert_test_exec_full(
-        &conn,
-        "s1",
-        100,
-        1,
-        0,
-        0,
-        0,
-        None,
-        "ls",
-        "/ls",
-        "[]",
-        Some(0),
-    );
-    insert_test_exec_full(
-        &conn,
-        "s1",
-        101,
-        1,
-        1000,
-        1000,
-        1000,
-        None,
-        "cat",
-        "/cat",
-        "[]",
-        Some(0),
-    );
+    SessionRow::new("s1").insert(&conn);
+    ExecEventRow::new("s1")
+        .uid(0)
+        .gid(0)
+        .euid(0)
+        .comm("ls")
+        .filename("/ls")
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(101)
+        .uid(1000)
+        .gid(1000)
+        .euid(1000)
+        .comm("cat")
+        .filename("/cat")
+        .insert(&conn);
     drop(conn);
 
     let filter = EventFilter::parse("user:root");
@@ -661,18 +721,21 @@ fn filter_cmd_exact() -> Result<()> {
     let repo = SqlEventRepository::new(pool.clone());
 
     let conn = pool.get()?;
-    insert_test_session(&conn, "s1");
-    insert_test_exec(&conn, "s1", 100, "ps", "/usr/bin/ps", "[]", Some(0));
-    insert_test_exec(
-        &conn,
-        "s1",
-        101,
-        "git",
-        "/usr/lib/git-core/git",
-        "[]",
-        Some(0),
-    );
-    insert_test_exec(&conn, "s1", 102, "ls", "/usr/bin/ls", "[]", Some(0));
+    SessionRow::new("s1").insert(&conn);
+    ExecEventRow::new("s1")
+        .comm("ps")
+        .filename("/usr/bin/ps")
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(101)
+        .comm("git")
+        .filename("/usr/lib/git-core/git")
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(102)
+        .comm("ls")
+        .filename("/usr/bin/ls")
+        .insert(&conn);
     drop(conn);
 
     let filter = EventFilter::parse("cmd:ps");
@@ -688,10 +751,21 @@ fn filter_cmd_glob() -> Result<()> {
     let repo = SqlEventRepository::new(pool.clone());
 
     let conn = pool.get()?;
-    insert_test_session(&conn, "s1");
-    insert_test_exec(&conn, "s1", 100, "git", "/usr/bin/git", "[]", Some(0));
-    insert_test_exec(&conn, "s1", 101, "gitk", "/usr/bin/gitk", "[]", Some(0));
-    insert_test_exec(&conn, "s1", 102, "ls", "/usr/bin/ls", "[]", Some(0));
+    SessionRow::new("s1").insert(&conn);
+    ExecEventRow::new("s1")
+        .comm("git")
+        .filename("/usr/bin/git")
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(101)
+        .comm("gitk")
+        .filename("/usr/bin/gitk")
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(102)
+        .comm("ls")
+        .filename("/usr/bin/ls")
+        .insert(&conn);
     drop(conn);
 
     let filter = EventFilter::parse("cmd:git*");
@@ -706,18 +780,21 @@ fn filter_cmd_negated() -> Result<()> {
     let repo = SqlEventRepository::new(pool.clone());
 
     let conn = pool.get()?;
-    insert_test_session(&conn, "s1");
-    insert_test_exec(
-        &conn,
-        "s1",
-        100,
-        "git",
-        "/usr/lib/git-core/git",
-        "[]",
-        Some(0),
-    );
-    insert_test_exec(&conn, "s1", 101, "ps", "/usr/bin/ps", "[]", Some(0));
-    insert_test_exec(&conn, "s1", 102, "ls", "/usr/bin/ls", "[]", Some(0));
+    SessionRow::new("s1").insert(&conn);
+    ExecEventRow::new("s1")
+        .comm("git")
+        .filename("/usr/lib/git-core/git")
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(101)
+        .comm("ps")
+        .filename("/usr/bin/ps")
+        .insert(&conn);
+    ExecEventRow::new("s1")
+        .pid(102)
+        .comm("ls")
+        .filename("/usr/bin/ls")
+        .insert(&conn);
     drop(conn);
 
     let filter = EventFilter::parse("!cmd:git");

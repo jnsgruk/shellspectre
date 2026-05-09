@@ -88,7 +88,7 @@ domain/domain_event.rs    ← redundant, avoid
 
 ### File Length
 
-- **Hard limit: 750 lines** per `.rs` file, enforced by pre-commit hook
+- **Guideline: 1000 lines** max per `.rs` file
 - Guideline: consider splitting at ~500 lines
 
 ### Clippy Thresholds
@@ -165,3 +165,23 @@ The CLI crate uses flat modules because its concerns are linear: load eBPF → c
 The web crate uses layered architecture because it benefits from separating the repository trait (domain) from its SQLite implementation (infrastructure), enabling testing with in-memory databases and keeping HTTP handlers independent of storage details.
 
 Use layered architecture when you need trait-based abstraction boundaries. Use flat modules when the data flows in one direction without polymorphism.
+
+### Test Fixture Extraction
+
+When a `#[cfg(test)]` block grows large enough that it would push a file toward the 1000-line limit, extract fixtures (builders, helpers, shared setup) into a sibling `_fixtures.rs` file. Wire it in with `#[path]`:
+
+```rust
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+#[path = "test_fixtures.rs"]
+mod test_fixtures;
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+#[path = "event_tests.rs"]
+mod tests;
+```
+
+The fixture file uses `pub(super)` visibility — it is not part of the public API. This keeps the main implementation file readable while respecting the line limit. See `shspectr-web/src/infrastructure/repositories/` for a worked example.
+
+Builder structs in fixture files use the consuming-setter pattern (`fn field(mut self, v: T) -> Self`) with a terminal `insert(self, conn: &Connection)` method. All fields have sensible defaults so call sites only override what they care about.

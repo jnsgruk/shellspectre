@@ -22,9 +22,23 @@ pub(crate) const SESSION_ID_PREFIX: &str = "ox_";
 struct ProcessInfo {
     session_id: String,
     ppid: u32,
-    #[allow(dead_code)]
     tty_nr: u32,
     comm: String,
+    execution_id: u64,
+}
+
+/// Per-TTY session entry used to keep session identity stable across
+/// short gaps between observed child processes on the same terminal.
+#[derive(Debug)]
+struct TtySession {
+    session_id: String,
+}
+
+/// Result of removing a tracked process on exit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExitInfo {
+    pub session_id: String,
+    pub session_complete: bool,
 }
 
 /// Correlates events into logical sessions.
@@ -32,8 +46,8 @@ struct ProcessInfo {
 pub struct SessionCorrelator {
     /// Maps pid → process info (including session_id).
     pid_map: HashMap<u32, ProcessInfo>,
-    /// Maps tty_nr → session_id for PTY-based grouping.
-    tty_sessions: HashMap<u32, String>,
+    /// Maps tty_nr → session entry for PTY-based grouping.
+    tty_sessions: HashMap<u32, TtySession>,
 }
 
 /// Minimal event info needed for session correlation.
@@ -43,6 +57,7 @@ pub struct EventInfo {
     pub ppid: u32,
     pub tty_nr: u32,
     pub comm: String,
+    pub execution_id: u64,
 }
 
 impl SessionCorrelator {
@@ -61,8 +76,12 @@ impl SessionCorrelator {
     /// 2. If the parent PID is tracked, inherit the parent's session.
     /// 3. Otherwise, create a new singleton session.
     pub fn on_exec(&mut self, info: &EventInfo) -> &str {
-        // If already tracked (re-exec), return existing session.
-        if self.pid_map.contains_key(&info.pid) {
+        // Re-exec stays in the same session but must refresh process metadata.
+        if let Some(existing) = self.pid_map.get_mut(&info.pid) {
+            existing.ppid = info.ppid;
+            existing.tty_nr = info.tty_nr;
+            existing.comm.clone_from(&info.comm);
+            existing.execution_id = info.execution_id;
             return &self.pid_map[&info.pid].session_id;
         }
 
@@ -75,6 +94,7 @@ impl SessionCorrelator {
                 ppid: info.ppid,
                 tty_nr: info.tty_nr,
                 comm: info.comm.clone(),
+                execution_id: info.execution_id,
             },
         );
 
@@ -95,15 +115,27 @@ impl SessionCorrelator {
                     ppid: info.ppid,
                     tty_nr: info.tty_nr,
                     comm: info.comm.clone(),
+                    execution_id: info.execution_id,
                 },
             );
         }
         &self.pid_map[&info.pid].session_id
     }
 
-    /// Record a process exit. Returns the session ID if the process was tracked.
-    pub fn on_exit(&mut self, pid: u32) -> Option<String> {
-        self.pid_map.remove(&pid).map(|info| info.session_id)
+    /// Record a process exit. Returns session details if the process was tracked.
+    pub fn on_exit(&mut self, pid: u32) -> Option<ExitInfo> {
+        let info = self.pid_map.remove(&pid)?;
+
+        let session_complete = info.tty_nr == 0
+            && !self
+                .pid_map
+                .values()
+                .any(|tracked| tracked.session_id == info.session_id);
+
+        Some(ExitInfo {
+            session_id: info.session_id,
+            session_complete,
+        })
     }
 
     /// Walk the ppid chain and return the comm of each known ancestor.
@@ -132,12 +164,17 @@ impl SessionCorrelator {
     fn resolve_session(&mut self, info: &EventInfo) -> String {
         // 1. PTY grouping: non-zero tty_nr → share session with same TTY.
         if info.tty_nr != 0 {
-            if let Some(sid) = self.tty_sessions.get(&info.tty_nr) {
-                return sid.clone();
+            if let Some(tty) = self.tty_sessions.get_mut(&info.tty_nr) {
+                return tty.session_id.clone();
             }
             // First process on this TTY — create a new session.
             let sid = generate_session_id();
-            self.tty_sessions.insert(info.tty_nr, sid.clone());
+            self.tty_sessions.insert(
+                info.tty_nr,
+                TtySession {
+                    session_id: sid.clone(),
+                },
+            );
             return sid;
         }
 
@@ -155,18 +192,21 @@ impl SessionCorrelator {
     fn tracked_count(&self) -> usize {
         self.pid_map.len()
     }
+
+    /// Number of active TTY session entries (for testing/diagnostics).
+    #[cfg(test)]
+    fn tty_session_count(&self) -> usize {
+        self.tty_sessions.len()
+    }
 }
 
 /// Generate a session ID like `ox_k7m3qx9p`.
 fn generate_session_id() -> String {
-    use std::io::Read;
-
     let mut buf = [0u8; SESSION_ID_SUFFIX_LEN];
-    // getrandom via /dev/urandom — infallible on Linux in practice.
+    // Panicking is appropriate: failure indicates a catastrophic environment (e.g. seccomp blocking getrandom(2)).
     #[allow(clippy::expect_used)]
-    let mut f = std::fs::File::open("/dev/urandom").expect("failed to open /dev/urandom");
-    #[allow(clippy::expect_used)]
-    f.read_exact(&mut buf).expect("failed to read random bytes");
+    getrandom::fill(&mut buf)
+        .expect("getrandom failed — is this process in a seccomp sandbox blocking getrandom(2)?");
 
     let charset = b"0123456789abcdefghijklmnopqrstuvwxyz";
     let suffix: String = buf
@@ -192,6 +232,7 @@ mod tests {
             ppid,
             tty_nr,
             comm: comm.into(),
+            execution_id: u64::from(pid),
         }
     }
 
@@ -261,11 +302,38 @@ mod tests {
     }
 
     #[test]
+    fn reexec_refreshes_process_metadata_and_execution_id() {
+        let mut c = SessionCorrelator::new();
+        c.on_exec(&ei_comm(100, 1, 42, "bash"));
+        c.on_exec(&EventInfo {
+            pid: 100,
+            ppid: 55,
+            tty_nr: 99,
+            comm: "python".into(),
+            execution_id: 1234,
+        });
+
+        assert_eq!(
+            c.pid_map.get(&100).map(|info| info.execution_id),
+            Some(1234)
+        );
+        assert_eq!(c.pid_map[&100].ppid, 55);
+        assert_eq!(c.pid_map[&100].tty_nr, 99);
+        assert_eq!(c.pid_map[&100].comm, "python");
+    }
+
+    #[test]
     fn on_exit_removes_process() {
         let mut c = SessionCorrelator::new();
         let sid = c.on_exec(&ei(100, 1, 0)).to_string();
         let removed = c.on_exit(100);
-        assert_eq!(removed, Some(sid));
+        assert_eq!(
+            removed,
+            Some(ExitInfo {
+                session_id: sid,
+                session_complete: true,
+            })
+        );
         assert_eq!(c.tracked_count(), 0);
     }
 
@@ -315,5 +383,89 @@ mod tests {
     fn ancestor_comms_empty_for_unknown() {
         let c = SessionCorrelator::new();
         assert!(c.ancestor_comms(999).is_empty());
+    }
+
+    #[test]
+    fn tty_session_entry_persists_after_last_process_exits() {
+        let mut c = SessionCorrelator::new();
+        c.on_exec(&ei(100, 1, 5));
+        assert_eq!(c.tty_session_count(), 1);
+        let exit = c.on_exit(100).expect("tracked process should exit");
+        assert!(
+            !exit.session_complete,
+            "PTY sessions should stay open across command gaps"
+        );
+        assert_eq!(
+            c.tty_session_count(),
+            1,
+            "TTY session should remain so later commands on the same terminal reuse it"
+        );
+    }
+
+    #[test]
+    fn tty_session_entry_retained_while_processes_remain() {
+        let mut c = SessionCorrelator::new();
+        c.on_exec(&ei(100, 1, 5));
+        c.on_exec(&ei(101, 1, 5));
+        assert_eq!(c.tty_session_count(), 1);
+        c.on_exit(100);
+        assert_eq!(
+            c.tty_session_count(),
+            1,
+            "entry must remain while a process is still on the TTY"
+        );
+        let exit = c.on_exit(101).expect("tracked process should exit");
+        assert!(!exit.session_complete);
+        assert_eq!(c.tty_session_count(), 1);
+    }
+
+    #[test]
+    fn tty_session_count_zero_for_tty_nr_zero() {
+        let mut c = SessionCorrelator::new();
+        c.on_exec(&ei(100, 1, 0));
+        assert_eq!(
+            c.tty_session_count(),
+            0,
+            "tty_nr=0 must not create a tty_sessions entry"
+        );
+        c.on_exit(100);
+        assert_eq!(c.tty_session_count(), 0);
+    }
+
+    #[test]
+    fn pty_session_survives_gap_between_commands() {
+        let mut c = SessionCorrelator::new();
+        let first = c.on_exec(&ei_comm(100, 1, 9, "ls")).to_string();
+        let exit = c.on_exit(100).expect("tracked process should exit");
+        assert_eq!(exit.session_id, first);
+        assert!(!exit.session_complete);
+
+        let second = c.on_exec(&ei_comm(200, 1, 9, "whoami")).to_string();
+        assert_eq!(
+            second, first,
+            "same tty_nr should keep one session across command gaps"
+        );
+    }
+
+    #[test]
+    fn non_pty_session_only_completes_when_last_process_exits() {
+        let mut c = SessionCorrelator::new();
+        let session_id = c.on_exec(&ei(100, 1, 0)).to_string();
+        let child_session = c.on_exec(&ei(200, 100, 0)).to_string();
+        assert_eq!(child_session, session_id);
+
+        let parent_exit = c.on_exit(100).expect("parent should be tracked");
+        assert_eq!(parent_exit.session_id, session_id);
+        assert!(
+            !parent_exit.session_complete,
+            "session must remain open while child is tracked"
+        );
+
+        let child_exit = c.on_exit(200).expect("child should be tracked");
+        assert_eq!(child_exit.session_id, session_id);
+        assert!(
+            child_exit.session_complete,
+            "last non-PTY process should complete the session"
+        );
     }
 }

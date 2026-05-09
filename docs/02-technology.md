@@ -21,7 +21,7 @@
 | BTF parsing | Custom (btf.rs) | Resolves task_struct field offsets at runtime |
 | Linker | mold (via clang) | Fast linking for dev iterations |
 | Linting | clippy (pedantic + cherry-picked restriction) | See clippy.toml for thresholds |
-| Pre-commit | prek | Rust rewrite of pre-commit; runs fmt, clippy, file length checks |
+| Pre-commit | prek | Rust rewrite of pre-commit; runs fmt, clippy |
 | Task runner | mise | Build orchestration, tool management |
 | System tests | LXD VMs + spread | Real eBPF loading in isolated VMs |
 
@@ -57,4 +57,4 @@
 - Argv: 20 args x 256 bytes each (BPF instruction budget).
 - I/O data: 4KB per event (configurable).
 - Ring buffer: 256KB — high event volume can cause drops (kernel increments lost count).
-- File length: 750 lines max enforced by pre-commit.
+- File length: 1000 lines max (guidance).

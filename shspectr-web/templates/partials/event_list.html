@@ -10,17 +10,20 @@
         <thead>
             <tr class="border-b border-gray-700 text-gray-400 text-xs uppercase tracking-wider">
                 <th class="px-3 py-3 cursor-pointer hover:text-gray-200"
-                    data-on:click="@get('{{ nav.sort_url_timestamp() }}')">
+                    data-sort-url="{{ nav.sort_url_timestamp() }}"
+                    data-on:click="@get(evt.currentTarget.dataset.sortUrl)">
                     Timestamp{{ nav.sort_indicator_timestamp() }}
                 </th>
                 <th class="px-3 py-3">User</th>
                 <th class="px-3 py-3 cursor-pointer hover:text-gray-200"
-                    data-on:click="@get('{{ nav.sort_url_comm() }}')">
+                    data-sort-url="{{ nav.sort_url_comm() }}"
+                    data-on:click="@get(evt.currentTarget.dataset.sortUrl)">
                     Cmd{{ nav.sort_indicator_comm() }}
                 </th>
                 <th class="px-3 py-3">Args</th>
                 <th class="px-3 py-3 cursor-pointer hover:text-gray-200"
-                    data-on:click="@get('{{ nav.sort_url_exit_code() }}')">
+                    data-sort-url="{{ nav.sort_url_exit_code() }}"
+                    data-on:click="@get(evt.currentTarget.dataset.sortUrl)">
                     Exit{{ nav.sort_indicator_exit_code() }}
                 </th>
                 <th class="px-3 py-3">Session</th>

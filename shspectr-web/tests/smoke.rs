@@ -3,6 +3,16 @@
 
 mod support;
 
+#[test]
+fn create_pool_fails_for_missing_database() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("missing.db");
+    let err =
+        shspectr_web::infrastructure::database::create_pool(path.to_str().expect("utf8 path"))
+            .expect_err("missing database should fail");
+    assert!(err.to_string().contains("collector must create it"));
+}
+
 #[tokio::test]
 async fn server_serves_index_page() {
     let (addr, _pool) = support::start_test_server().await;

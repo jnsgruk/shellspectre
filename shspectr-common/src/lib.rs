@@ -15,6 +15,9 @@ pub const MAX_FILENAME_LEN: usize = 256;
 /// Kernel task comm field length.
 pub const COMM_LEN: usize = 16;
 
+/// Current version of the ring-buffer wire contract.
+pub const WIRE_VERSION: u32 = 1;
+
 /// Byte offsets resolved from kernel BTF at runtime, shared with eBPF
 /// via an array map. These allow reading `ppid`, `euid`, and `tty_nr`
 /// from `task_struct` without hardcoding kernel-version-specific offsets.
@@ -35,6 +38,16 @@ pub struct TaskFieldOffsets {
     pub signal_tty: u64,
     /// Offset of `index` (int) in `tty_struct`.
     pub tty_index: u64,
+    /// Offset of `files` (ptr) in `task_struct`.
+    pub task_files: u64,
+    /// Offset of `fdt` (ptr) in `files_struct`.
+    pub files_fdt: u64,
+    /// Offset of `fd` (ptr) in `fdtable`.
+    pub fdt_fd: u64,
+    /// Offset of `f_inode` (ptr) in `file`.
+    pub file_inode: u64,
+    /// Offset of `i_rdev` (dev_t) in `inode`.
+    pub inode_rdev: u64,
 }
 
 impl TaskFieldOffsets {
@@ -51,6 +64,11 @@ impl TaskFieldOffsets {
             self.task_signal,
             self.signal_tty,
             self.tty_index,
+            self.task_files,
+            self.files_fdt,
+            self.fdt_fd,
+            self.file_inode,
+            self.inode_rdev,
         ]
     }
 }
@@ -65,7 +83,12 @@ pub mod offset_idx {
     pub const TASK_SIGNAL: u32 = 4;
     pub const SIGNAL_TTY: u32 = 5;
     pub const TTY_INDEX: u32 = 6;
-    pub const COUNT: u32 = 7;
+    pub const TASK_FILES: u32 = 7;
+    pub const FILES_FDT: u32 = 8;
+    pub const FDT_FD: u32 = 9;
+    pub const FILE_INODE: u32 = 10;
+    pub const INODE_RDEV: u32 = 11;
+    pub const COUNT: u32 = 12;
 }
 
 /// Discriminant for the type of event captured.
@@ -84,13 +107,31 @@ pub enum EventType {
     Exit = 4,
 }
 
+impl EventType {
+    /// Decode an event type from the raw wire discriminant.
+    pub const fn from_wire(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Exec),
+            2 => Some(Self::Read),
+            3 => Some(Self::Write),
+            4 => Some(Self::Exit),
+            _ => None,
+        }
+    }
+
+    /// Encode the event type to the raw wire discriminant.
+    pub const fn as_wire(self) -> u32 {
+        self as u32
+    }
+}
+
 /// Common header shared by all events sent through the ring buffer.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "std", derive(serde::Serialize, serde::Deserialize))]
 pub struct EventHeader {
-    pub event_type: EventType,
-    _pad0: u32,
+    pub event_type: u32,
+    pub wire_version: u32,
     pub timestamp_ns: u64,
     pub pid: u32,
     pub ppid: u32,
@@ -101,11 +142,19 @@ pub struct EventHeader {
     pub euid: u32,
     pub comm: [u8; COMM_LEN],
     pub tty_nr: u32,
-    _pad1: [u32; 2],
+    pub execution_id: u64,
     pub cgroup_id: u64,
 }
 
 impl EventHeader {
+    /// Decode and validate the event type stored in the header.
+    pub const fn decoded_event_type(&self) -> Option<EventType> {
+        if self.wire_version != WIRE_VERSION {
+            return None;
+        }
+        EventType::from_wire(self.event_type)
+    }
+
     /// Create a new event header. Padding fields are zeroed automatically.
     #[allow(clippy::too_many_arguments, clippy::similar_names)]
     pub const fn new(
@@ -120,11 +169,12 @@ impl EventHeader {
         euid: u32,
         comm: [u8; COMM_LEN],
         tty_nr: u32,
+        execution_id: u64,
         cgroup_id: u64,
     ) -> Self {
         Self {
-            event_type,
-            _pad0: 0,
+            event_type: event_type.as_wire(),
+            wire_version: WIRE_VERSION,
             timestamp_ns,
             pid,
             ppid,
@@ -135,7 +185,7 @@ impl EventHeader {
             euid,
             comm,
             tty_nr,
-            _pad1: [0; 2],
+            execution_id,
             cgroup_id,
         }
     }
@@ -254,6 +304,11 @@ mod tests {
         assert_eq!(mem::offset_of!(EventHeader, euid), 40, "euid");
         assert_eq!(mem::offset_of!(EventHeader, comm), 44, "comm");
         assert_eq!(mem::offset_of!(EventHeader, tty_nr), 60, "tty_nr");
+        assert_eq!(
+            mem::offset_of!(EventHeader, execution_id),
+            64,
+            "execution_id"
+        );
         assert_eq!(mem::offset_of!(EventHeader, cgroup_id), 72, "cgroup_id");
     }
 
@@ -311,6 +366,11 @@ mod tests {
             task_signal: 50,
             signal_tty: 60,
             tty_index: 70,
+            task_files: 80,
+            files_fdt: 90,
+            fdt_fd: 100,
+            file_inode: 110,
+            inode_rdev: 120,
         };
         let arr = offsets.as_array();
         assert_eq!(arr.len(), offset_idx::COUNT as usize);
@@ -321,6 +381,11 @@ mod tests {
         assert_eq!(arr[offset_idx::TASK_SIGNAL as usize], 50);
         assert_eq!(arr[offset_idx::SIGNAL_TTY as usize], 60);
         assert_eq!(arr[offset_idx::TTY_INDEX as usize], 70);
+        assert_eq!(arr[offset_idx::TASK_FILES as usize], 80);
+        assert_eq!(arr[offset_idx::FILES_FDT as usize], 90);
+        assert_eq!(arr[offset_idx::FDT_FD as usize], 100);
+        assert_eq!(arr[offset_idx::FILE_INODE as usize], 110);
+        assert_eq!(arr[offset_idx::INODE_RDEV as usize], 120);
     }
 
     #[test]
@@ -329,6 +394,40 @@ mod tests {
         assert_eq!(EventType::Read as u32, 2);
         assert_eq!(EventType::Write as u32, 3);
         assert_eq!(EventType::Exit as u32, 4);
+    }
+
+    #[test]
+    fn event_type_from_wire_rejects_unknown_values() {
+        assert_eq!(EventType::from_wire(1), None);
+        assert_eq!(EventType::from_wire(99), None);
+    }
+
+    #[test]
+    fn event_header_validates_wire_version_and_type() {
+        let mut header = EventHeader::new(
+            EventType::Exec,
+            0,
+            1,
+            0,
+            1,
+            1,
+            1000,
+            1000,
+            1000,
+            [0u8; COMM_LEN],
+            0,
+            7,
+            9,
+        );
+
+        assert_eq!(header.decoded_event_type(), Some(EventType::Exec));
+
+        header.wire_version = WIRE_VERSION + 1;
+        assert_eq!(header.decoded_event_type(), None);
+
+        header.wire_version = WIRE_VERSION;
+        header.event_type = 99;
+        assert_eq!(header.decoded_event_type(), None);
     }
 
     #[test]
@@ -355,7 +454,7 @@ mod tests {
 
     #[test]
     fn task_field_offsets_size() {
-        assert_eq!(mem::size_of::<TaskFieldOffsets>(), 56);
+        assert_eq!(mem::size_of::<TaskFieldOffsets>(), 96);
     }
 
     #[test]
@@ -371,6 +470,7 @@ mod tests {
             0,
             0,
             [0u8; COMM_LEN],
+            0,
             0,
             0,
         );
@@ -393,6 +493,7 @@ mod tests {
             0,
             0,
             [0u8; COMM_LEN],
+            0,
             0,
             0,
         );
@@ -432,6 +533,7 @@ CREATE TABLE IF NOT EXISTS events (
     euid        INTEGER NOT NULL,
     comm        TEXT,
     tty_nr      INTEGER,
+    execution_id INTEGER NOT NULL DEFAULT 0,
     filename    TEXT,
     argv        TEXT,
     fd          INTEGER,
@@ -444,6 +546,7 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(session_id, event_type);
+CREATE INDEX IF NOT EXISTS idx_events_execution ON events(session_id, pid, execution_id, event_type, id);
 ";
 
 /// Metadata for a filter keyword, used for autocompletion and help.

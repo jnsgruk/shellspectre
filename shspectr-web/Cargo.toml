@@ -33,3 +33,4 @@ tokio-stream = "0.1"
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
 rusqlite.workspace = true
+tempfile = "3"

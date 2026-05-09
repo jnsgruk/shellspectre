@@ -34,13 +34,13 @@ mise run test-system                      # System tests (requires LXD)
 mise run fmt                              # Format
 mise run clippy                           # Lint
 prek run -av                              # All pre-commit hooks
-sudo mise run run -- run --filter-pty     # Run with PTY filter
+sudo mise run dev                         # Build and run with SQLite + web UI
 ```
 
 ## Code Conventions
 
 - **Rust edition**: 2024
-- **File length**: 750 lines max (pre-commit enforced). Consider splitting at ~500.
+- **File length**: 1000 lines max (guidance, not enforced). Consider splitting at ~500.
 - **eBPF crate**: `#![no_std]`, `#[no_main]`. No heap. BPF stack or BPF maps only.
 - **Shared types**: `#[repr(C)]`, `#![no_std]` in `shspectr-common`.
 - **Error handling**: `anyhow` (CLI), `Result<(), i64>` (eBPF), typed enums (web domain).

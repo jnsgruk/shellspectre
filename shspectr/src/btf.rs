@@ -19,6 +19,7 @@ struct Btf {
     type_off: usize,
     type_len: usize,
     str_off: usize,
+    str_len: usize,
 }
 
 impl Btf {
@@ -36,6 +37,23 @@ impl Btf {
         let type_off = u32::from_ne_bytes(data[8..12].try_into()?) as usize;
         let type_len = u32::from_ne_bytes(data[12..16].try_into()?) as usize;
         let str_off = u32::from_ne_bytes(data[16..20].try_into()?) as usize;
+        let str_len = u32::from_ne_bytes(data[20..24].try_into()?) as usize;
+        if hdr_len < 24 || hdr_len > data.len() {
+            bail!("invalid BTF header length {hdr_len}");
+        }
+        let type_end = hdr_len
+            .checked_add(type_off)
+            .and_then(|start| start.checked_add(type_len))
+            .context("BTF type section overflows header bounds")?;
+        let str_start = hdr_len
+            .checked_add(str_off)
+            .context("BTF string section overflows header bounds")?;
+        let str_end = str_start
+            .checked_add(str_len)
+            .context("BTF string table overflows header bounds")?;
+        if type_end > data.len() || str_end > data.len() || str_start < type_end {
+            bail!("BTF sections extend beyond the input buffer");
+        }
 
         Ok(Self {
             data,
@@ -43,6 +61,7 @@ impl Btf {
             type_off,
             type_len,
             str_off,
+            str_len,
         })
     }
 
@@ -53,13 +72,19 @@ impl Btf {
     }
 
     /// Look up a null-terminated string from the BTF string table.
-    fn string(&self, offset: u32) -> &str {
-        let start = self.hdr_len + self.str_off + offset as usize;
-        let end = self.data[start..]
+    fn string(&self, offset: u32) -> Result<&str> {
+        let str_base = self.hdr_len + self.str_off;
+        let str_end = str_base + self.str_len;
+        let start = str_base + offset as usize;
+        if start >= str_end {
+            bail!("BTF string offset {offset} outside string table");
+        }
+        let end = self.data[start..str_end]
             .iter()
             .position(|&b| b == 0)
-            .map_or(self.data.len(), |p| start + p);
-        std::str::from_utf8(&self.data[start..end]).unwrap_or("")
+            .map_or(str_end, |p| start + p);
+        std::str::from_utf8(&self.data[start..end])
+            .context("BTF string table contains invalid UTF-8")
     }
 
     fn read_u32(&self, off: usize) -> u32 {
@@ -107,21 +132,25 @@ impl Btf {
             let kind = (info >> 24) & 0x1f;
             let vlen = (info & 0xffff) as usize;
 
-            if kind == BTF_KIND_STRUCT && self.string(name_off) == struct_name {
+            if kind == BTF_KIND_STRUCT && self.string(name_off)? == struct_name {
                 // Scan members (each is 12 bytes: name_off, type, bit_offset).
                 let member_base = pos + 12;
                 for i in 0..vlen {
                     let m_off = member_base + i * 12;
+                    if m_off + 12 > end {
+                        bail!("truncated BTF struct member list for '{struct_name}'");
+                    }
                     let m_name_off = self.read_u32(m_off);
                     let m_bit_offset = self.read_u32(m_off + 8);
-                    if self.string(m_name_off) == field_name {
+                    if self.string(m_name_off)? == field_name {
                         return Ok(u64::from(m_bit_offset) / 8);
                     }
                 }
                 bail!("field '{field_name}' not found in struct '{struct_name}'");
             }
 
-            pos += 12 + Self::extra_bytes(kind, vlen);
+            let step = 12 + Self::extra_bytes(kind, vlen);
+            pos = pos.checked_add(step).context("BTF type walk overflowed")?;
         }
 
         bail!("struct '{struct_name}' not found in kernel BTF");
@@ -154,6 +183,21 @@ pub fn resolve_task_field_offsets() -> Result<TaskFieldOffsets> {
         tty_index: btf
             .struct_field_offset("tty_struct", "index")
             .context("tty_struct.index")?,
+        task_files: btf
+            .struct_field_offset("task_struct", "files")
+            .context("task_struct.files")?,
+        files_fdt: btf
+            .struct_field_offset("files_struct", "fdt")
+            .context("files_struct.fdt")?,
+        fdt_fd: btf
+            .struct_field_offset("fdtable", "fd")
+            .context("fdtable.fd")?,
+        file_inode: btf
+            .struct_field_offset("file", "f_inode")
+            .context("file.f_inode")?,
+        inode_rdev: btf
+            .struct_field_offset("inode", "i_rdev")
+            .context("inode.i_rdev")?,
     })
 }
 
@@ -285,5 +329,87 @@ mod tests {
         assert_eq!(Btf::extra_bytes(3, 0), 12); // ARRAY
         assert_eq!(Btf::extra_bytes(2, 0), 0); // PTR
         assert_eq!(Btf::extra_bytes(6, 2), 16); // ENUM: 8 * 2
+    }
+
+    #[test]
+    fn struct_field_offset_with_multiple_structs() {
+        // Build BTF with two structs
+        let mut str_table = vec![0u8]; // index 0 = empty
+
+        let first_name_off = str_table.len() as u32;
+        str_table.extend_from_slice(b"other_struct\0");
+        let first_field_off = str_table.len() as u32;
+        str_table.extend_from_slice(b"x\0");
+
+        let second_name_off = str_table.len() as u32;
+        str_table.extend_from_slice(b"target_struct\0");
+        let second_field_off = str_table.len() as u32;
+        str_table.extend_from_slice(b"y\0");
+
+        // Type section: two structs
+        let mut type_section = Vec::new();
+
+        // Struct 1: other_struct { x }
+        let info1 = (BTF_KIND_STRUCT << 24) | 1;
+        type_section.extend_from_slice(&first_name_off.to_ne_bytes());
+        type_section.extend_from_slice(&info1.to_ne_bytes());
+        type_section.extend_from_slice(&8u32.to_ne_bytes()); // size
+        type_section.extend_from_slice(&first_field_off.to_ne_bytes()); // member name
+        type_section.extend_from_slice(&0u32.to_ne_bytes()); // type
+        type_section.extend_from_slice(&0u32.to_ne_bytes()); // bit_offset = 0
+
+        // Struct 2: target_struct { y } at bit_offset 128 (byte 16)
+        let info2 = (BTF_KIND_STRUCT << 24) | 1;
+        type_section.extend_from_slice(&second_name_off.to_ne_bytes());
+        type_section.extend_from_slice(&info2.to_ne_bytes());
+        type_section.extend_from_slice(&24u32.to_ne_bytes()); // size
+        type_section.extend_from_slice(&second_field_off.to_ne_bytes()); // member name
+        type_section.extend_from_slice(&0u32.to_ne_bytes()); // type
+        type_section.extend_from_slice(&128u32.to_ne_bytes()); // bit_offset = 128 → byte 16
+
+        // Build BTF header
+        let hdr_len: u32 = 24;
+        let type_len = type_section.len() as u32;
+        let str_off = type_len;
+        let str_len = str_table.len() as u32;
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&BTF_MAGIC.to_ne_bytes());
+        data.push(1);
+        data.push(0);
+        data.extend_from_slice(&hdr_len.to_ne_bytes());
+        data.extend_from_slice(&0u32.to_ne_bytes()); // type_off
+        data.extend_from_slice(&type_len.to_ne_bytes());
+        data.extend_from_slice(&str_off.to_ne_bytes());
+        data.extend_from_slice(&str_len.to_ne_bytes());
+        data.extend_from_slice(&type_section);
+        data.extend_from_slice(&str_table);
+
+        let btf = Btf::from_bytes(data).unwrap();
+        // Should find y in target_struct at byte offset 16
+        assert_eq!(btf.struct_field_offset("target_struct", "y").unwrap(), 16);
+        // Should still find x in other_struct at byte offset 0
+        assert_eq!(btf.struct_field_offset("other_struct", "x").unwrap(), 0);
+    }
+
+    #[test]
+    fn from_bytes_rejects_truncated_sections() {
+        let mut data = make_btf("my_struct", &["alpha"]);
+        data[12..16].copy_from_slice(&u32::MAX.to_ne_bytes());
+        let err = Btf::from_bytes(data).unwrap_err();
+        assert!(
+            err.to_string().contains("BTF type section")
+                || err.to_string().contains("extend beyond")
+        );
+    }
+
+    #[test]
+    fn struct_field_offset_rejects_bad_string_offset() {
+        let mut data = make_btf("my_struct", &["alpha"]);
+        let type_section_start = 24usize;
+        data[type_section_start..type_section_start + 4].copy_from_slice(&999u32.to_ne_bytes());
+        let btf = Btf::from_bytes(data).unwrap();
+        let err = btf.struct_field_offset("my_struct", "alpha").unwrap_err();
+        assert!(err.to_string().contains("string offset"));
     }
 }

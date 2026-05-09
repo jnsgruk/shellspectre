@@ -27,12 +27,5 @@ hooks = [
         pass_filenames = false,
         types = ["rust"],
     },
-    {
-        id = "check-file-length",
-        name = "file length check (max 500 lines)",
-        entry = "mise run check-file-length",
-        language = "system",
-        pass_filenames = false,
-        types = ["rust"],
-    },
+
 ]

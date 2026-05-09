@@ -101,7 +101,7 @@ fn infinite_scroll_response(
         .data(sse_patch_elements(
             &sentinel_html,
             "#load-more-sentinel",
-            "outer",
+            "replace",
         ));
 
     let stream = tokio_stream::iter(vec![Ok::<_, Infallible>(rows_evt), Ok(sentinel_evt)]);
@@ -191,7 +191,7 @@ fn sse_patch_elements(html: &str, selector: &str, mode: &str) -> String {
         .map(|line| format!("elements {line}"))
         .collect::<Vec<_>>()
         .join("\n");
-    format!("{elements}\nselector {selector}\nmode {mode}")
+    format!("selector {selector}\nmode {mode}\n{elements}")
 }
 
 pub fn routes() -> Router<AppState> {
@@ -291,7 +291,7 @@ async fn live_events(
             .map(|line| format!("elements {line}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let merge_data = format!("{elements_data}\nselector #event-rows\nmode prepend");
+        let merge_data = format!("selector #event-rows\nmode prepend\n{elements_data}");
         let merge_evt = Event::default()
             .event("datastar-patch-elements")
             .data(merge_data)
@@ -312,13 +312,8 @@ async fn live_events(
 /// Query parameters for the raw IO endpoint.
 #[derive(Debug, Deserialize)]
 pub struct RawParams {
-    /// Which stream to return: "stdin" or "stdout" (default).
-    #[serde(default = "default_stream")]
-    pub stream: String,
-}
-
-fn default_stream() -> String {
-    "stdout".to_owned()
+    /// Which stream to return.
+    pub stream: Option<String>,
 }
 
 /// `GET /api/v1/events/{id}/raw?stream=stdout`
@@ -339,10 +334,18 @@ async fn get_event_raw(
         }
     };
 
-    let raw: String = if params.stream == "stdin" {
+    let stream = params.stream.as_deref().unwrap_or("stdout");
+    let raw: String = if stream == "stdin" {
         detail.stdin_data.iter().map(|c| c.data.as_str()).collect()
-    } else {
+    } else if stream == "stdout" {
         detail.stdout_data.iter().map(|c| c.data.as_str()).collect()
+    } else {
+        return (
+            StatusCode::BAD_REQUEST,
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            "invalid stream; expected stdin or stdout",
+        )
+            .into_response();
     };
 
     (

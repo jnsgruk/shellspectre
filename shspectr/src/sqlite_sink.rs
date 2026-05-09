@@ -31,6 +31,7 @@ impl SqliteSink {
         let conn = Connection::open(path).context("open SQLite database")?;
         conn.execute_batch(shspectr_common::SCHEMA)
             .context("create SQLite schema")?;
+        ensure_schema_compat(&conn)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
             .context("set SQLite pragmas")?;
         Ok(Self { conn })
@@ -42,6 +43,7 @@ impl SqliteSink {
         let conn = Connection::open_in_memory().context("open in-memory SQLite")?;
         conn.execute_batch(shspectr_common::SCHEMA)
             .context("create SQLite schema")?;
+        ensure_schema_compat(&conn)?;
         Ok(Self { conn })
     }
 
@@ -53,9 +55,15 @@ impl SqliteSink {
                 "INSERT OR IGNORE INTO sessions (id, started_at, root_pid, root_comm, uid, euid, tty_nr, cgroup_id)
                  VALUES (?1, datetime('now'), ?2, ?3, ?4, ?5, ?6, ?7)",
             )?
-            .execute(
-                rusqlite::params![info.session_id, info.pid, info.comm, info.uid, info.euid, info.tty_nr, i64::try_from(info.cgroup_id).unwrap_or(i64::MAX)],
-            )
+            .execute(rusqlite::params![
+                info.session_id,
+                info.pid,
+                info.comm,
+                info.uid,
+                info.euid,
+                info.tty_nr,
+                i64::try_from(info.cgroup_id).unwrap_or(i64::MAX)
+            ])
             .context("insert session")?;
         Ok(())
     }
@@ -65,8 +73,8 @@ impl SqliteSink {
         let argv_json = serde_json::to_string(&event.argv).unwrap_or_default();
         self.conn
             .prepare_cached(
-                "INSERT INTO events (session_id, event_type, timestamp, pid, ppid, uid, gid, euid, comm, tty_nr, filename, argv)
-                 VALUES (?1, 'exec', datetime('now'), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO events (session_id, event_type, timestamp, pid, ppid, uid, gid, euid, comm, tty_nr, execution_id, filename, argv)
+                 VALUES (?1, 'exec', datetime('now'), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             )?
             .execute(
                 rusqlite::params![
@@ -78,6 +86,7 @@ impl SqliteSink {
                     event.euid,
                     event.comm,
                     event.tty_nr,
+                    i64::try_from(event.execution_id).unwrap_or(i64::MAX),
                     event.filename,
                     argv_json,
                 ],
@@ -86,12 +95,17 @@ impl SqliteSink {
         Ok(())
     }
 
-    /// Record an exit event and update session ended_at.
-    pub fn insert_exit(&self, session_id: &str, event: &ParsedExitEvent) -> Result<()> {
+    /// Record an exit event and optionally close the session.
+    pub fn insert_exit(
+        &self,
+        session_id: &str,
+        event: &ParsedExitEvent,
+        session_complete: bool,
+    ) -> Result<()> {
         self.conn
             .prepare_cached(
-                "INSERT INTO events (session_id, event_type, timestamp, pid, ppid, uid, gid, euid, comm, tty_nr, exit_code)
-                 VALUES (?1, 'exit', datetime('now'), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO events (session_id, event_type, timestamp, pid, ppid, uid, gid, euid, comm, tty_nr, execution_id, exit_code)
+                 VALUES (?1, 'exit', datetime('now'), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             )?
             .execute(
                 rusqlite::params![
@@ -103,6 +117,7 @@ impl SqliteSink {
                     event.euid,
                     event.comm,
                     event.tty_nr,
+                    i64::try_from(event.execution_id).unwrap_or(i64::MAX),
                     event.exit_code,
                 ],
             )
@@ -115,18 +130,24 @@ impl SqliteSink {
                 "UPDATE events SET exit_code = ?1 \
                  WHERE id = ( \
                      SELECT id FROM events \
-                     WHERE session_id = ?2 AND pid = ?3 AND event_type = 'exec' \
+                     WHERE session_id = ?2 AND pid = ?3 AND execution_id = ?4 AND event_type = 'exec' \
                      ORDER BY id DESC LIMIT 1 \
-                 )",
+                  )",
             )?
-            .execute(rusqlite::params![event.exit_code, session_id, event.pid])
+            .execute(rusqlite::params![
+                event.exit_code,
+                session_id,
+                event.pid,
+                i64::try_from(event.execution_id).unwrap_or(i64::MAX)
+            ])
             .context("backfill exit_code onto exec row")?;
 
-        // Update session ended_at.
-        self.conn
-            .prepare_cached("UPDATE sessions SET ended_at = datetime('now') WHERE id = ?1")?
-            .execute(rusqlite::params![session_id])
-            .context("update session ended_at")?;
+        if session_complete {
+            self.conn
+                .prepare_cached("UPDATE sessions SET ended_at = datetime('now') WHERE id = ?1")?
+                .execute(rusqlite::params![session_id])
+                .context("update session ended_at")?;
+        }
         Ok(())
     }
 
@@ -140,8 +161,8 @@ impl SqliteSink {
         let data_str = String::from_utf8_lossy(&event.data);
         self.conn
             .prepare_cached(
-                "INSERT INTO events (session_id, event_type, timestamp, pid, ppid, uid, gid, euid, comm, tty_nr, fd, data, data_len, byte_count)
-                 VALUES (?1, ?2, datetime('now'), ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                "INSERT INTO events (session_id, event_type, timestamp, pid, ppid, uid, gid, euid, comm, tty_nr, execution_id, fd, data, data_len, byte_count)
+                 VALUES (?1, ?2, datetime('now'), ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             )?
             .execute(
                 rusqlite::params![
@@ -154,6 +175,7 @@ impl SqliteSink {
                     event.euid,
                     event.comm,
                     event.tty_nr,
+                    i64::try_from(event.execution_id).unwrap_or(i64::MAX),
                     event.fd,
                     data_str.as_ref(),
                     i64::try_from(event.data.len()).unwrap_or(i64::MAX),
@@ -165,9 +187,277 @@ impl SqliteSink {
     }
 }
 
+fn ensure_schema_compat(conn: &Connection) -> Result<()> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(events)")
+        .context("inspect events schema")?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("read events schema")?;
+    if !columns.iter().any(|column| column == "execution_id") {
+        conn.execute(
+            "ALTER TABLE events ADD COLUMN execution_id INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .context("add execution_id column")?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct SessionInfoBuilder<'a> {
+        session_id: &'a str,
+        pid: u32,
+        comm: &'a str,
+        uid: u32,
+        euid: u32,
+        tty_nr: u32,
+        cgroup_id: u64,
+    }
+
+    #[allow(dead_code)]
+    impl<'a> SessionInfoBuilder<'a> {
+        fn new(session_id: &'a str) -> Self {
+            Self {
+                session_id,
+                pid: 100,
+                comm: "bash",
+                uid: 1000,
+                euid: 1000,
+                tty_nr: 42,
+                cgroup_id: 99,
+            }
+        }
+
+        fn pid(mut self, v: u32) -> Self {
+            self.pid = v;
+            self
+        }
+        fn comm(mut self, v: &'a str) -> Self {
+            self.comm = v;
+            self
+        }
+        fn uid(mut self, v: u32) -> Self {
+            self.uid = v;
+            self
+        }
+        fn euid(mut self, v: u32) -> Self {
+            self.euid = v;
+            self
+        }
+        fn tty_nr(mut self, v: u32) -> Self {
+            self.tty_nr = v;
+            self
+        }
+        fn cgroup_id(mut self, v: u64) -> Self {
+            self.cgroup_id = v;
+            self
+        }
+
+        fn build(self) -> SessionInfo<'a> {
+            SessionInfo {
+                session_id: self.session_id,
+                pid: self.pid,
+                comm: self.comm,
+                uid: self.uid,
+                euid: self.euid,
+                tty_nr: self.tty_nr,
+                cgroup_id: self.cgroup_id,
+            }
+        }
+    }
+
+    struct ParsedExecEventBuilder {
+        pid: u32,
+        ppid: u32,
+        uid: u32,
+        gid: u32,
+        euid: u32,
+        comm: String,
+        tty_nr: u32,
+        cgroup_id: u64,
+        execution_id: u64,
+        filename: String,
+        argv: Vec<String>,
+        retval: i64,
+    }
+
+    #[allow(dead_code)]
+    impl ParsedExecEventBuilder {
+        fn new() -> Self {
+            Self {
+                pid: 100,
+                ppid: 1,
+                uid: 1000,
+                gid: 1000,
+                euid: 1000,
+                comm: "ls".into(),
+                tty_nr: 42,
+                cgroup_id: 99,
+                execution_id: 500,
+                filename: "/usr/bin/ls".into(),
+                argv: vec!["ls".into(), "-la".into()],
+                retval: 0,
+            }
+        }
+
+        fn pid(mut self, v: u32) -> Self {
+            self.pid = v;
+            self
+        }
+        fn ppid(mut self, v: u32) -> Self {
+            self.ppid = v;
+            self
+        }
+        fn uid(mut self, v: u32) -> Self {
+            self.uid = v;
+            self
+        }
+        fn gid(mut self, v: u32) -> Self {
+            self.gid = v;
+            self
+        }
+        fn euid(mut self, v: u32) -> Self {
+            self.euid = v;
+            self
+        }
+        fn comm(mut self, v: &str) -> Self {
+            self.comm = v.into();
+            self
+        }
+        fn tty_nr(mut self, v: u32) -> Self {
+            self.tty_nr = v;
+            self
+        }
+        fn cgroup_id(mut self, v: u64) -> Self {
+            self.cgroup_id = v;
+            self
+        }
+        fn execution_id(mut self, v: u64) -> Self {
+            self.execution_id = v;
+            self
+        }
+        fn filename(mut self, v: &str) -> Self {
+            self.filename = v.into();
+            self
+        }
+        fn argv(mut self, v: Vec<&str>) -> Self {
+            self.argv = v.into_iter().map(Into::into).collect();
+            self
+        }
+        fn retval(mut self, v: i64) -> Self {
+            self.retval = v;
+            self
+        }
+
+        fn build(self) -> ParsedExecEvent {
+            ParsedExecEvent {
+                pid: self.pid,
+                ppid: self.ppid,
+                uid: self.uid,
+                gid: self.gid,
+                euid: self.euid,
+                comm: self.comm,
+                tty_nr: self.tty_nr,
+                cgroup_id: self.cgroup_id,
+                execution_id: self.execution_id,
+                filename: self.filename,
+                argv: self.argv,
+                retval: self.retval,
+            }
+        }
+    }
+
+    struct ParsedExitEventBuilder {
+        pid: u32,
+        ppid: u32,
+        uid: u32,
+        gid: u32,
+        euid: u32,
+        comm: String,
+        tty_nr: u32,
+        cgroup_id: u64,
+        execution_id: u64,
+        exit_code: i32,
+    }
+
+    #[allow(dead_code)]
+    impl ParsedExitEventBuilder {
+        fn new() -> Self {
+            Self {
+                pid: 100,
+                ppid: 1,
+                uid: 1000,
+                gid: 1000,
+                euid: 1000,
+                comm: "ls".into(),
+                tty_nr: 42,
+                cgroup_id: 99,
+                execution_id: 500,
+                exit_code: 0,
+            }
+        }
+
+        fn pid(mut self, v: u32) -> Self {
+            self.pid = v;
+            self
+        }
+        fn ppid(mut self, v: u32) -> Self {
+            self.ppid = v;
+            self
+        }
+        fn uid(mut self, v: u32) -> Self {
+            self.uid = v;
+            self
+        }
+        fn gid(mut self, v: u32) -> Self {
+            self.gid = v;
+            self
+        }
+        fn euid(mut self, v: u32) -> Self {
+            self.euid = v;
+            self
+        }
+        fn comm(mut self, v: &str) -> Self {
+            self.comm = v.into();
+            self
+        }
+        fn tty_nr(mut self, v: u32) -> Self {
+            self.tty_nr = v;
+            self
+        }
+        fn cgroup_id(mut self, v: u64) -> Self {
+            self.cgroup_id = v;
+            self
+        }
+        fn execution_id(mut self, v: u64) -> Self {
+            self.execution_id = v;
+            self
+        }
+        fn exit_code(mut self, v: i32) -> Self {
+            self.exit_code = v;
+            self
+        }
+
+        fn build(self) -> ParsedExitEvent {
+            ParsedExitEvent {
+                pid: self.pid,
+                ppid: self.ppid,
+                uid: self.uid,
+                gid: self.gid,
+                euid: self.euid,
+                comm: self.comm,
+                tty_nr: self.tty_nr,
+                cgroup_id: self.cgroup_id,
+                execution_id: self.execution_id,
+                exit_code: self.exit_code,
+            }
+        }
+    }
 
     #[test]
     fn schema_creation() -> Result<()> {
@@ -184,22 +474,10 @@ mod tests {
         Ok(())
     }
 
-    fn test_session(id: &str) -> SessionInfo<'_> {
-        SessionInfo {
-            session_id: id,
-            pid: 100,
-            comm: "bash",
-            uid: 1000,
-            euid: 1000,
-            tty_nr: 42,
-            cgroup_id: 99,
-        }
-    }
-
     #[test]
     fn ensure_session_creates_row() -> Result<()> {
         let sink = SqliteSink::open_in_memory()?;
-        sink.ensure_session(&test_session("ox_test1234"))?;
+        sink.ensure_session(&SessionInfoBuilder::new("ox_test1234").build())?;
 
         let (id, root_pid, uid): (String, i64, i64) = sink.conn.query_row(
             "SELECT id, root_pid, uid FROM sessions WHERE id = ?1",
@@ -215,16 +493,17 @@ mod tests {
     #[test]
     fn ensure_session_idempotent() -> Result<()> {
         let sink = SqliteSink::open_in_memory()?;
-        sink.ensure_session(&test_session("ox_test1234"))?;
-        sink.ensure_session(&SessionInfo {
-            session_id: "ox_test1234",
-            pid: 200,
-            comm: "zsh",
-            uid: 2000,
-            euid: 2000,
-            tty_nr: 0,
-            cgroup_id: 0,
-        })?;
+        sink.ensure_session(&SessionInfoBuilder::new("ox_test1234").build())?;
+        sink.ensure_session(
+            &SessionInfoBuilder::new("ox_test1234")
+                .pid(200)
+                .comm("zsh")
+                .uid(2000)
+                .euid(2000)
+                .tty_nr(0)
+                .cgroup_id(0)
+                .build(),
+        )?;
 
         // Should still have original values (INSERT OR IGNORE).
         let root_pid: i64 = sink.conn.query_row(
@@ -236,71 +515,70 @@ mod tests {
         Ok(())
     }
 
-    fn sample_exec() -> ParsedExecEvent {
-        ParsedExecEvent {
-            pid: 100,
-            ppid: 1,
-            uid: 1000,
-            gid: 1000,
-            euid: 1000,
-            comm: "ls".into(),
-            tty_nr: 42,
-            cgroup_id: 99,
-            filename: "/usr/bin/ls".into(),
-            argv: vec!["ls".into(), "-la".into()],
-            retval: 0,
-        }
-    }
-
     #[test]
     fn insert_exec_event() -> Result<()> {
         let sink = SqliteSink::open_in_memory()?;
-        sink.ensure_session(&test_session("ox_abc"))?;
-        sink.insert_exec("ox_abc", &sample_exec())?;
+        sink.ensure_session(&SessionInfoBuilder::new("ox_abc").build())?;
+        sink.insert_exec("ox_abc", &ParsedExecEventBuilder::new().build())?;
 
-        let (event_type, pid, filename): (String, i64, String) = sink.conn.query_row(
-            "SELECT event_type, pid, filename FROM events WHERE session_id = ?1",
-            ["ox_abc"],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )?;
+        let (event_type, pid, execution_id, filename): (String, i64, i64, String) =
+            sink.conn.query_row(
+                "SELECT event_type, pid, execution_id, filename FROM events WHERE session_id = ?1",
+                ["ox_abc"],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )?;
         assert_eq!(event_type, "exec");
         assert_eq!(pid, 100);
+        assert_eq!(execution_id, 500);
         assert_eq!(filename, "/usr/bin/ls");
         Ok(())
     }
 
     #[test]
-    fn insert_exit_updates_session() -> Result<()> {
+    fn insert_exit_only_closes_session_when_requested() -> Result<()> {
         let sink = SqliteSink::open_in_memory()?;
-        sink.ensure_session(&test_session("ox_abc"))?;
+        sink.ensure_session(&SessionInfoBuilder::new("ox_abc").build())?;
+        sink.insert_exit(
+            "ox_abc",
+            &ParsedExitEventBuilder::new()
+                .comm("bash")
+                .exit_code(0)
+                .build(),
+            false,
+        )?;
 
-        let exit = ParsedExitEvent {
-            pid: 100,
-            ppid: 1,
-            uid: 1000,
-            gid: 1000,
-            euid: 1000,
-            comm: "bash".into(),
-            tty_nr: 42,
-            cgroup_id: 99,
-            exit_code: 0,
-        };
-        sink.insert_exit("ox_abc", &exit)?;
-
-        // ended_at should now be set.
         let ended_at: Option<String> = sink.conn.query_row(
             "SELECT ended_at FROM sessions WHERE id = ?1",
             ["ox_abc"],
             |r| r.get(0),
         )?;
-        assert!(ended_at.is_some(), "ended_at should be set after exit");
+        assert!(
+            ended_at.is_none(),
+            "ended_at should remain unset until session completion"
+        );
+
+        sink.insert_exit(
+            "ox_abc",
+            &ParsedExitEventBuilder::new()
+                .pid(101)
+                .execution_id(501)
+                .exit_code(0)
+                .build(),
+            true,
+        )?;
+        let ended_at: Option<String> = sink.conn.query_row(
+            "SELECT ended_at FROM sessions WHERE id = ?1",
+            ["ox_abc"],
+            |r| r.get(0),
+        )?;
+        assert!(ended_at.is_some(), "ended_at should be set on final exit");
         Ok(())
     }
 
     #[test]
     fn insert_io_event() -> Result<()> {
         let sink = SqliteSink::open_in_memory()?;
-        sink.ensure_session(&test_session("ox_abc"))?;
+        sink.ensure_session(&SessionInfoBuilder::new("ox_abc").build())?;
 
         let io = ParsedIoEvent {
             pid: 100,
@@ -311,18 +589,21 @@ mod tests {
             comm: "echo".into(),
             tty_nr: 42,
             cgroup_id: 99,
+            execution_id: 500,
             fd: 1,
             data: b"hello world\n".to_vec(),
             count: 12,
         };
         sink.insert_io("ox_abc", &io, "write")?;
 
-        let (event_type, fd, data): (String, i64, String) = sink.conn.query_row(
-            "SELECT event_type, fd, data FROM events WHERE session_id = ?1",
-            ["ox_abc"],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )?;
+        let (event_type, execution_id, fd, data): (String, i64, i64, String) =
+            sink.conn.query_row(
+                "SELECT event_type, execution_id, fd, data FROM events WHERE session_id = ?1",
+                ["ox_abc"],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )?;
         assert_eq!(event_type, "write");
+        assert_eq!(execution_id, 500);
         assert_eq!(fd, 1);
         assert_eq!(data, "hello world\n");
         Ok(())
@@ -331,21 +612,13 @@ mod tests {
     #[test]
     fn insert_exit_backfills_exit_code_on_exec_row() -> Result<()> {
         let sink = SqliteSink::open_in_memory()?;
-        sink.ensure_session(&test_session("ox_abc"))?;
-        sink.insert_exec("ox_abc", &sample_exec())?;
-
-        let exit = ParsedExitEvent {
-            pid: 100,
-            ppid: 1,
-            uid: 1000,
-            gid: 1000,
-            euid: 1000,
-            comm: "ls".into(),
-            tty_nr: 42,
-            cgroup_id: 99,
-            exit_code: 42,
-        };
-        sink.insert_exit("ox_abc", &exit)?;
+        sink.ensure_session(&SessionInfoBuilder::new("ox_abc").build())?;
+        sink.insert_exec("ox_abc", &ParsedExecEventBuilder::new().build())?;
+        sink.insert_exit(
+            "ox_abc",
+            &ParsedExitEventBuilder::new().exit_code(42).build(),
+            true,
+        )?;
 
         // The exec row for pid 100 must now have exit_code = 42.
         let exit_code: Option<i64> = sink.conn.query_row(
@@ -364,21 +637,13 @@ mod tests {
     #[test]
     fn query_events_by_session_and_type() -> Result<()> {
         let sink = SqliteSink::open_in_memory()?;
-        sink.ensure_session(&test_session("ox_abc"))?;
-        sink.insert_exec("ox_abc", &sample_exec())?;
-
-        let exit = ParsedExitEvent {
-            pid: 100,
-            ppid: 1,
-            uid: 1000,
-            gid: 1000,
-            euid: 1000,
-            comm: "ls".into(),
-            tty_nr: 42,
-            cgroup_id: 99,
-            exit_code: 0,
-        };
-        sink.insert_exit("ox_abc", &exit)?;
+        sink.ensure_session(&SessionInfoBuilder::new("ox_abc").build())?;
+        sink.insert_exec("ox_abc", &ParsedExecEventBuilder::new().build())?;
+        sink.insert_exit(
+            "ox_abc",
+            &ParsedExitEventBuilder::new().exit_code(0).build(),
+            true,
+        )?;
 
         // Query using the index.
         let count: i64 = sink.conn.query_row(
@@ -394,6 +659,46 @@ mod tests {
             |r| r.get(0),
         )?;
         assert_eq!(total, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn insert_exit_backfills_matching_execution_only() -> Result<()> {
+        let sink = SqliteSink::open_in_memory()?;
+        sink.ensure_session(&SessionInfoBuilder::new("ox_abc").build())?;
+        sink.insert_exec(
+            "ox_abc",
+            &ParsedExecEventBuilder::new()
+                .pid(100)
+                .execution_id(10)
+                .build(),
+        )?;
+        sink.insert_exec(
+            "ox_abc",
+            &ParsedExecEventBuilder::new()
+                .pid(100)
+                .execution_id(11)
+                .build(),
+        )?;
+
+        sink.insert_exit(
+            "ox_abc",
+            &ParsedExitEventBuilder::new()
+                .pid(100)
+                .execution_id(10)
+                .exit_code(7)
+                .build(),
+            false,
+        )?;
+
+        let exit_codes: Vec<(i64, Option<i64>)> = {
+            let mut stmt = sink.conn.prepare(
+                "SELECT execution_id, exit_code FROM events WHERE session_id = ?1 AND event_type = 'exec' ORDER BY execution_id ASC",
+            )?;
+            stmt.query_map(["ox_abc"], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        assert_eq!(exit_codes, vec![(10, Some(7)), (11, None)]);
         Ok(())
     }
 }

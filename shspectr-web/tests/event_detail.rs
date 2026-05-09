@@ -7,20 +7,24 @@ use rusqlite::params;
 use shspectr_web::infrastructure::database::DbPool;
 
 fn seed_event_with_io(pool: &DbPool) -> i64 {
+    seed_event_with_io_for_session(pool, "s1")
+}
+
+fn seed_event_with_io_for_session(pool: &DbPool, session_id: &str) -> i64 {
     let conn = pool.get().expect("get conn");
     conn.execute(
         "INSERT INTO sessions (id, started_at, root_pid, uid, euid) \
-         VALUES ('s1', datetime('now'), 100, 1000, 1000)",
-        [],
+         VALUES (?1, datetime('now'), 100, 1000, 1000)",
+        params![session_id],
     )
     .expect("insert session");
 
     conn.execute(
         "INSERT INTO events \
-         (session_id, event_type, timestamp, pid, ppid, uid, gid, euid, comm, filename, argv, exit_code, tty_nr) \
-         VALUES ('s1', 'exec', '2026-05-10T14:32:01', 4821, 4800, 1000, 1000, 1000, 'cat', '/usr/bin/cat', \
-                 '[\"cat\",\"secret.txt\"]', 0, ?1)",
-        params![0x8803u32], // pts/3
+         (session_id, event_type, timestamp, execution_id, pid, ppid, uid, gid, euid, comm, filename, argv, exit_code, tty_nr) \
+         VALUES (?1, 'exec', '2026-05-10T14:32:01', 4821, 4821, 4800, 1000, 1000, 1000, 'cat', '/usr/bin/cat', \
+                 '[\"cat\",\"secret.txt\"]', 0, ?2)",
+        params![session_id, 0x8803u32], // pts/3
     )
     .expect("insert exec");
 
@@ -35,9 +39,9 @@ fn seed_event_with_io(pool: &DbPool) -> i64 {
     // Add I/O data.
     conn.execute(
         "INSERT INTO events \
-         (session_id, event_type, timestamp, pid, ppid, uid, gid, euid, fd, data, data_len, byte_count) \
-         VALUES ('s1', 'write', '2026-05-10T14:32:02', 4821, 4800, 1000, 1000, 1000, 1, 'TOP SECRET\n', 11, 11)",
-        [],
+         (session_id, event_type, timestamp, execution_id, pid, ppid, uid, gid, euid, fd, data, data_len, byte_count) \
+         VALUES (?1, 'write', '2026-05-10T14:32:02', 4821, 4821, 4800, 1000, 1000, 1000, 1, 'TOP SECRET\n', 11, 11)",
+        params![session_id],
     )
     .expect("insert io");
 
@@ -124,8 +128,8 @@ async fn detail_no_io_shows_message() {
     .expect("insert session");
     conn.execute(
         "INSERT INTO events \
-         (session_id, event_type, timestamp, pid, ppid, uid, gid, euid, comm) \
-         VALUES ('s2', 'exec', datetime('now'), 100, 1, 1000, 1000, 1000, 'ls')",
+         (session_id, event_type, timestamp, execution_id, pid, ppid, uid, gid, euid, comm) \
+         VALUES ('s2', 'exec', datetime('now'), 100, 100, 1, 1000, 1000, 1000, 'ls')",
         [],
     )
     .expect("insert event");
@@ -177,4 +181,57 @@ async fn raw_not_found_returns_404() {
         .await
         .expect("request");
     assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn raw_invalid_stream_returns_400() {
+    let (addr, pool) = support::start_test_server().await;
+    let id = seed_event_with_io(&pool);
+
+    let resp = reqwest::get(format!(
+        "http://{addr}/api/v1/events/{id}/raw?stream=stderr"
+    ))
+    .await
+    .expect("request");
+
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.expect("body");
+    assert!(body.contains("invalid stream"));
+}
+
+#[tokio::test]
+async fn detail_uses_data_attributes_for_filters() {
+    let (addr, pool) = support::start_test_server().await;
+    let id = seed_event_with_io(&pool);
+
+    let body = reqwest::get(format!("http://{addr}/api/v1/events/{id}/detail"))
+        .await
+        .expect("request")
+        .text()
+        .await
+        .expect("body");
+
+    assert!(body.contains("data-filter-key=\"session\""));
+    assert!(body.contains("data-filter-key=\"pid\""));
+    assert!(body.contains("data-filter-key=\"tty\""));
+    assert!(body.contains("evt.currentTarget.dataset.filterKey"));
+}
+
+#[tokio::test]
+async fn detail_does_not_embed_filter_values_in_javascript_strings() {
+    let (addr, pool) = support::start_test_server().await;
+    let id = seed_event_with_io_for_session(&pool, "s'1");
+
+    let body = reqwest::get(format!("http://{addr}/api/v1/events/{id}/detail"))
+        .await
+        .expect("request")
+        .text()
+        .await
+        .expect("body");
+
+    assert!(body.contains("data-filter-value=\"s&#"));
+    assert!(
+        !body.contains("shspectrBuildQuery($_query, 'session', 's&#x27;1')"),
+        "filter value should come from data attributes, not an inline JS string"
+    );
 }

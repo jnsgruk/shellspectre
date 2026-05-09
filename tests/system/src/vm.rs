@@ -7,7 +7,7 @@ use tempfile::TempDir;
 /// Bump this suffix whenever the base VM provisioning changes.
 /// When the expected base isn't found, any existing `shspectr-base-*` VMs
 /// are deleted and a new one is created from scratch.
-const BASE_VM_NAME: &str = "shspectr-base-c3d5";
+const BASE_VM_NAME: &str = "shspectr-base-f2b8";
 
 /// An LXD VM managed for integration testing.
 ///
@@ -28,6 +28,7 @@ impl TestVm {
     /// 3. Generate an ephemeral SSH keypair and push it.
     /// 4. Start the VM and wait for SSH.
     pub fn provision() -> Result<Self> {
+        cleanup_stale_test_vms()?;
         Self::ensure_base()?;
 
         let suffix = random_suffix();
@@ -167,6 +168,26 @@ SYSCTL
             # Set default target to multi-user (no graphical)
             systemctl set-default multi-user.target
 
+            # Install shspectr test service unit
+            cat > /etc/systemd/system/shspectr-test.service <<'UNIT'
+[Unit]
+Description=shspectr system test
+After=network.target
+
+[Service]
+Type=simple
+Environment=RUST_LOG=info
+Environment=SHSPECTR_EBPF_PATH=/usr/local/lib/shspectr/shspectr-ebpf
+EnvironmentFile=-/etc/shspectr-test.env
+ExecStart=/bin/bash -lc 'exec /usr/local/bin/shspectr run $SHSPECTR_EXTRA_ARGS >> /tmp/shspectr.jsonl 2>&1'
+StandardInput=null
+Restart=no
+UNIT
+            systemctl daemon-reload
+
+            # Install shspectr artifact directory
+            install -d -m 755 /usr/local/lib/shspectr
+
             # Clean up
             apt-get autoremove -y -qq >/dev/null 2>&1 || true
             apt-get clean
@@ -191,10 +212,11 @@ SYSCTL
         Ok(())
     }
 
-    /// Push a local file into the VM at the given path.
+    /// Push a local file into the VM at the given path, creating parent
+    /// directories as needed.
     pub fn push_file(&self, local: &str, remote: &str) -> Result<()> {
         let dest = format!("{}/{}", self.name, remote.trim_start_matches('/'));
-        lxc(&["file", "push", local, &dest])?;
+        lxc(&["file", "push", "--create-dirs", local, &dest])?;
         Ok(())
     }
 
@@ -272,6 +294,14 @@ fn list_vms_matching(prefix: &str) -> Result<Vec<String>> {
         .map(|l| l.trim().to_string())
         .filter(|l| l.starts_with(prefix))
         .collect())
+}
+
+fn cleanup_stale_test_vms() -> Result<()> {
+    let stale = list_vms_matching("shspectr-test-")?;
+    for name in stale {
+        let _ = lxc(&["delete", &name, "--force"]);
+    }
+    Ok(())
 }
 
 fn wait_for_agent(name: &str) -> Result<()> {
