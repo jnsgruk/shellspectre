@@ -48,5 +48,6 @@ sudo mise run dev                         # Build and run with SQLite + web UI
 - **Naming**: snake_case files. Module path provides context — no redundant prefixes.
 - **No junk drawers**: No `utils/` or `helpers/` directories.
 - **Tests**: Inline `#[cfg(test)] mod tests` at file bottom. Colocated, not in separate directories.
+- **No stringly typing**: Represent domain concepts as enums or newtypes, not raw strings. Use `Display`/`FromStr` for text conversion, and `From`/`Into` for infallible type conversions where the mapping is natural and unsurprising.
 
 See [docs/03-code-structure.md](docs/03-code-structure.md) for full conventions and [docs/04-development.md](docs/04-development.md) for development workflow.

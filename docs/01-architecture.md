@@ -85,7 +85,7 @@ Constraints: no heap, 512B stack limit per function, no loops without bounded it
 Role: loads eBPF programs, consumes events from the ring buffer, correlates sessions, applies filters, writes to sinks.
 
 - Rust stable, `clap` CLI, `tokio` async runtime
-- Optionally includes `shspectr-web` for the `web` subcommand
+- Optionally embeds `shspectr-web` for an integrated web UI (`--web` flag)
 
 Key modules:
 

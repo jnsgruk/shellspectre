@@ -25,10 +25,7 @@ The eBPF crate must be built before running the userspace collector because `shs
 
 ```sh
 # Build and run with SQLite + web UI (requires root or CAP_BPF + CAP_PERFMON)
-sudo mise run dev
-
-# Web UI (standalone, no eBPF needed — reads an existing collector-created SQLite DB)
-mise run dev-web                               # Dev mode (port 3000, ./shspectr.db)
+mise run dev
 ```
 
 ## Testing

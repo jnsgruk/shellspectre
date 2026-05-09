@@ -25,15 +25,10 @@ pub struct Paginated {
     pub warnings: Vec<String>,
 }
 
-impl Paginated {
-    /// Create from a domain Page of `EventSummary`.
-    pub fn from_page(page: &Page<crate::domain::event::EventSummary>) -> Self {
+impl From<&Page<crate::domain::event::EventSummary>> for Paginated {
+    fn from(page: &Page<crate::domain::event::EventSummary>) -> Self {
         Self {
-            items: page
-                .items
-                .iter()
-                .map(EventSummaryView::from_summary)
-                .collect(),
+            items: page.items.iter().map(EventSummaryView::from).collect(),
             page: page.page,
             page_size: page.page_size,
             total_items: page.total_items,
@@ -43,13 +38,15 @@ impl Paginated {
             warnings: Vec::new(),
         }
     }
+}
 
+impl Paginated {
     /// Create from a domain Page with filter warnings.
     pub fn from_page_with_warnings(
         page: &Page<crate::domain::event::EventSummary>,
         warnings: Vec<String>,
     ) -> Self {
-        let mut p = Self::from_page(page);
+        let mut p = Self::from(page);
         p.warnings = warnings;
         p
     }
@@ -91,8 +88,8 @@ impl ListNavigator {
         format!(
             "/api/v1/events?page={page}&page_size={}&sort={}&dir={}&q={}",
             self.page_size,
-            self.sort_str(),
-            self.dir_str(),
+            self.sort,
+            self.direction,
             urlencoded(&self.query),
         )
     }
@@ -110,8 +107,8 @@ impl ListNavigator {
         format!(
             "/api/v1/events?page=1&page_size={}&sort={}&dir={}&q={}",
             self.page_size,
-            sort_key_str(key),
-            dir_str(dir),
+            key,
+            dir,
             urlencoded(&self.query),
         )
     }
@@ -158,29 +155,6 @@ impl ListNavigator {
     /// Sort indicator for the exit code column.
     pub fn sort_indicator_exit_code(&self) -> &'static str {
         self.sort_indicator(EventSortKey::ExitCode)
-    }
-
-    fn sort_str(&self) -> &'static str {
-        sort_key_str(self.sort)
-    }
-
-    fn dir_str(&self) -> &'static str {
-        dir_str(self.direction)
-    }
-}
-
-fn sort_key_str(key: EventSortKey) -> &'static str {
-    match key {
-        EventSortKey::Timestamp => "timestamp",
-        EventSortKey::Comm => "comm",
-        EventSortKey::ExitCode => "exit_code",
-    }
-}
-
-fn dir_str(dir: SortDirection) -> &'static str {
-    match dir {
-        SortDirection::Asc => "asc",
-        SortDirection::Desc => "desc",
     }
 }
 

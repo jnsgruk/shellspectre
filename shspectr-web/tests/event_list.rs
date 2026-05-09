@@ -18,7 +18,7 @@ fn seed_events(pool: &DbPool, count: u32) {
         conn.execute(
             "INSERT INTO events \
              (session_id, event_type, timestamp, execution_id, pid, ppid, uid, gid, euid, comm, filename, argv, exit_code) \
-             VALUES ('s1', 'exec', datetime('now'), ?1, ?1, 1, 1000, 1000, 1000, ?2, '/usr/bin/cmd', ?3, 0)",
+             VALUES ('s1', 0, datetime('now'), ?1, ?1, 1, 1000, 1000, 1000, ?2, '/usr/bin/cmd', ?3, 0)",
             rusqlite::params![100 + i, format!("cmd{i}"), format!(r#"["cmd{i}"]"#)],
         )
         .expect("insert event");
@@ -227,7 +227,7 @@ async fn api_events_negation_glob_url_encoded() {
         conn.execute(
             "INSERT INTO events \
              (session_id, event_type, timestamp, execution_id, pid, ppid, uid, gid, euid, comm, filename, argv, exit_code) \
-             VALUES ('s1', 'exec', datetime('now'), ?1, ?1, 1, 1000, 1000, 1000, ?2, '/usr/bin/cmd', '[]', 0)",
+             VALUES ('s1', 0, datetime('now'), ?1, ?1, 1, 1000, 1000, 1000, ?2, '/usr/bin/cmd', '[]', 0)",
             rusqlite::params![100 + i as u32, comm],
         )
         .expect("insert event");

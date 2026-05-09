@@ -1,8 +1,19 @@
 //! Presentation view models for events.
 
+use shspectr_common::EventType;
+
 use crate::domain::event::{ChildProcess, EventDetail, EventSummary};
 
 use super::username::resolve_uid;
+
+/// Format an optional exit code into a display string and CSS class.
+fn exit_code_display(code: Option<i32>) -> (String, &'static str) {
+    match code {
+        Some(0) => ("0".to_owned(), "text-green-400"),
+        Some(c) => (c.to_string(), "text-red-400"),
+        None => ("\u{2014}".to_owned(), "text-gray-500"),
+    }
+}
 
 /// Formatted event summary for display in the event table.
 ///
@@ -69,10 +80,9 @@ fn parse_argv0(argv: Option<&str>) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-impl EventSummaryView {
-    /// Create a view from a domain `EventSummary`.
+impl From<&EventSummary> for EventSummaryView {
     #[allow(clippy::too_many_lines)]
-    pub fn from_summary(s: &EventSummary) -> Self {
+    fn from(s: &EventSummary) -> Self {
         let comm = s.comm.clone().unwrap_or_else(|| "\u{2014}".to_owned());
 
         // Check for fd-path executions first — when the kernel filename is an
@@ -150,11 +160,7 @@ impl EventSummaryView {
             .unwrap_or(&s.timestamp)
             .to_owned();
 
-        let (exit_code, exit_code_class) = match s.exit_code {
-            Some(0) => ("0".to_owned(), "text-green-400"),
-            Some(code) => (code.to_string(), "text-red-400"),
-            None => ("\u{2014}".to_owned(), "text-gray-500"),
-        };
+        let (exit_code, exit_code_class) = exit_code_display(s.exit_code);
 
         Self {
             id: s.id,
@@ -227,7 +233,7 @@ pub struct EventDetailView {
     /// Full command line (filename + argv joined).
     pub full_command: String,
     /// Event type.
-    pub event_type: String,
+    pub event_type: EventType,
     /// Timestamp.
     pub timestamp: String,
     /// Exit code display.
@@ -284,9 +290,8 @@ pub struct ParentProcessView {
     pub command: String,
 }
 
-impl EventDetailView {
-    /// Create from a domain `EventDetail`.
-    pub fn from_detail(d: &EventDetail) -> Self {
+impl From<&EventDetail> for EventDetailView {
+    fn from(d: &EventDetail) -> Self {
         let tty = match d.tty_nr {
             Some(nr) if nr > 0 => {
                 let major = (nr >> 8) & 0xFF;
@@ -320,7 +325,7 @@ impl EventDetailView {
             gid: d.gid.to_string(),
             tty,
             full_command,
-            event_type: d.summary.event_type.clone(),
+            event_type: d.summary.event_type,
             timestamp: d.summary.timestamp.clone(),
             exit_code: d
                 .summary
@@ -336,24 +341,16 @@ impl EventDetailView {
             euid_raw: d.summary.euid,
             tty_nr_raw: d.tty_nr.filter(|&nr| nr > 0),
             exit_code_raw: d.summary.exit_code,
-            children: d
-                .children
-                .iter()
-                .map(ChildProcessView::from_child)
-                .collect(),
-            parent: d.parent.as_ref().map(ParentProcessView::from_parent),
+            children: d.children.iter().map(ChildProcessView::from).collect(),
+            parent: d.parent.as_ref().map(ParentProcessView::from),
         }
     }
 }
 
-impl ChildProcessView {
-    fn from_child(c: &ChildProcess) -> Self {
+impl From<&ChildProcess> for ChildProcessView {
+    fn from(c: &ChildProcess) -> Self {
         let command = build_child_command_string(c);
-        let (exit_code, exit_code_class) = match c.exit_code {
-            Some(0) => ("0".to_owned(), "text-green-400"),
-            Some(code) => (code.to_string(), "text-red-400"),
-            None => ("\u{2014}".to_owned(), "text-gray-500"),
-        };
+        let (exit_code, exit_code_class) = exit_code_display(c.exit_code);
         Self {
             id: c.id,
             pid: c.pid,
@@ -365,8 +362,8 @@ impl ChildProcessView {
     }
 }
 
-impl ParentProcessView {
-    fn from_parent(p: &crate::domain::event::ParentProcess) -> Self {
+impl From<&crate::domain::event::ParentProcess> for ParentProcessView {
+    fn from(p: &crate::domain::event::ParentProcess) -> Self {
         let command = if let Some(ref argv_str) = p.argv
             && let Ok(argv) = serde_json::from_str::<Vec<String>>(argv_str)
             && !argv.is_empty()
@@ -427,13 +424,14 @@ fn truncate(s: &str, max_len: usize) -> String {
 mod tests {
     use super::*;
     use crate::domain::event::{EventDetail, EventSummary, IoChunk};
+    use shspectr_common::EventType;
 
     fn make_summary() -> EventSummary {
         EventSummary {
             id: 1,
             timestamp: "2026-05-10T14:32:01.123456".to_owned(),
             session_id: "ox_abc123def456".to_owned(),
-            event_type: "exec".to_owned(),
+            event_type: EventType::Exec,
             execution_id: 1,
             pid: 1234,
             ppid: 1000,
@@ -448,20 +446,20 @@ mod tests {
 
     #[test]
     fn from_summary_formats_timestamp() {
-        let view = EventSummaryView::from_summary(&make_summary());
+        let view = EventSummaryView::from(&make_summary());
         assert_eq!(view.timestamp, "2026-05-10T14:32:01");
     }
 
     #[test]
     fn from_summary_truncates_session_id() {
-        let view = EventSummaryView::from_summary(&make_summary());
+        let view = EventSummaryView::from(&make_summary());
         assert_eq!(view.session_id_short, "ox_abc123d\u{2026}");
         assert_eq!(view.session_id, "ox_abc123def456");
     }
 
     #[test]
     fn from_summary_builds_command_from_argv() {
-        let view = EventSummaryView::from_summary(&make_summary());
+        let view = EventSummaryView::from(&make_summary());
         // argv is ["cargo","build","--release"], filename is /usr/bin/cargo
         assert_eq!(view.command_name, "cargo");
         assert_eq!(view.command_dir, "/usr/bin/");
@@ -473,7 +471,7 @@ mod tests {
     fn from_summary_fallback_to_filename() {
         let mut s = make_summary();
         s.argv = None;
-        let view = EventSummaryView::from_summary(&s);
+        let view = EventSummaryView::from(&s);
         assert_eq!(view.command_name, "cargo");
         assert_eq!(view.command_dir, "/usr/bin/");
         assert_eq!(view.command_args, "");
@@ -485,7 +483,7 @@ mod tests {
         let mut s = make_summary();
         s.argv = None;
         s.filename = None;
-        let view = EventSummaryView::from_summary(&s);
+        let view = EventSummaryView::from(&s);
         assert_eq!(view.command_name, "cargo");
         assert_eq!(view.command_dir, "");
         assert_eq!(view.command_args, "");
@@ -497,7 +495,7 @@ mod tests {
         let mut s = make_summary();
         s.filename = Some("ps".to_owned());
         s.argv = Some(r#"["ps","-ao","ppid,args"]"#.to_owned());
-        let view = EventSummaryView::from_summary(&s);
+        let view = EventSummaryView::from(&s);
         assert_eq!(view.command_name, "ps");
         assert_eq!(view.command_dir, "");
         assert_eq!(view.command_args, "-ao ppid,args");
@@ -508,7 +506,7 @@ mod tests {
         let mut s = make_summary();
         s.filename = Some("/snap/mise/111/bin/mise".to_owned());
         s.argv = Some(r#"["/snap/mise/111/bin/mise","hook-env","-s","fish"]"#.to_owned());
-        let view = EventSummaryView::from_summary(&s);
+        let view = EventSummaryView::from(&s);
         assert_eq!(view.command_name, "mise");
         assert_eq!(view.command_dir, "/snap/mise/111/bin/");
         assert_eq!(view.command_args, "hook-env -s fish");
@@ -516,7 +514,7 @@ mod tests {
 
     #[test]
     fn from_summary_exit_code_zero_is_green() {
-        let view = EventSummaryView::from_summary(&make_summary());
+        let view = EventSummaryView::from(&make_summary());
         assert_eq!(view.exit_code, "0");
         assert_eq!(view.exit_code_class, "text-green-400");
     }
@@ -525,7 +523,7 @@ mod tests {
     fn from_summary_exit_code_nonzero_is_red() {
         let mut s = make_summary();
         s.exit_code = Some(1);
-        let view = EventSummaryView::from_summary(&s);
+        let view = EventSummaryView::from(&s);
         assert_eq!(view.exit_code, "1");
         assert_eq!(view.exit_code_class, "text-red-400");
     }
@@ -534,7 +532,7 @@ mod tests {
     fn from_summary_exit_code_none_is_dash() {
         let mut s = make_summary();
         s.exit_code = None;
-        let view = EventSummaryView::from_summary(&s);
+        let view = EventSummaryView::from(&s);
         assert_eq!(view.exit_code, "\u{2014}");
         assert_eq!(view.exit_code_class, "text-gray-500");
     }
@@ -559,7 +557,7 @@ mod tests {
                 id: 1,
                 timestamp: "2026-05-10T14:32:01".to_owned(),
                 session_id: "ox_abc123".to_owned(),
-                event_type: "exec".to_owned(),
+                event_type: EventType::Exec,
                 execution_id: 1,
                 pid: 4821,
                 ppid: 4800,
@@ -589,13 +587,13 @@ mod tests {
 
     #[test]
     fn tty_nr_to_pts() {
-        let view = EventDetailView::from_detail(&make_detail());
+        let view = EventDetailView::from(&make_detail());
         assert_eq!(view.tty, "pts/3");
     }
 
     #[test]
     fn stdout_data_concatenated() {
-        let view = EventDetailView::from_detail(&make_detail());
+        let view = EventDetailView::from(&make_detail());
         // Plain text with no ANSI codes passes through as-is.
         assert_eq!(view.stdout_html, "TOP SECRET\n");
         assert_eq!(view.stdout_bytes, 11);
@@ -604,7 +602,7 @@ mod tests {
 
     #[test]
     fn no_stdin_data() {
-        let view = EventDetailView::from_detail(&make_detail());
+        let view = EventDetailView::from(&make_detail());
         assert!(!view.has_stdin);
         assert!(view.stdin_html.is_empty());
     }
@@ -637,7 +635,7 @@ mod tests {
         let mut s = make_summary();
         s.filename = Some("/proc/self/fd/9".to_owned());
         s.argv = Some(r#"["systemd-executor","--deserialize","57"]"#.to_owned());
-        let view = EventSummaryView::from_summary(&s);
+        let view = EventSummaryView::from(&s);
         assert_eq!(view.command_name, "systemd-executor");
         assert_eq!(view.command_dir, "/proc/self/fd/9");
         assert_eq!(view.command_args, "--deserialize 57");
@@ -648,7 +646,7 @@ mod tests {
         let mut s = make_summary();
         s.filename = Some("/dev/fd/3".to_owned());
         s.argv = Some(r#"["my-program","--flag"]"#.to_owned());
-        let view = EventSummaryView::from_summary(&s);
+        let view = EventSummaryView::from(&s);
         assert_eq!(view.command_name, "my-program");
         assert_eq!(view.command_dir, "/dev/fd/3");
     }
@@ -658,7 +656,7 @@ mod tests {
         let mut s = make_summary();
         s.filename = Some("/proc/12345/fd/9".to_owned());
         s.argv = Some(r#"["some-daemon"]"#.to_owned());
-        let view = EventSummaryView::from_summary(&s);
+        let view = EventSummaryView::from(&s);
         assert_eq!(view.command_name, "some-daemon");
         assert_eq!(view.command_dir, "/proc/12345/fd/9");
     }
@@ -669,14 +667,14 @@ mod tests {
         s.filename = Some("/proc/self/fd/9".to_owned());
         s.argv = None;
         s.comm = Some("systemd-exec".to_owned());
-        let view = EventSummaryView::from_summary(&s);
+        let view = EventSummaryView::from(&s);
         assert_eq!(view.command_name, "systemd-exec");
         assert_eq!(view.command_dir, "/proc/self/fd/9");
     }
 
     #[test]
     fn normal_path_unaffected_by_fd_logic() {
-        let view = EventSummaryView::from_summary(&make_summary());
+        let view = EventSummaryView::from(&make_summary());
         assert_eq!(view.command_name, "cargo");
         assert_eq!(view.command_dir, "/usr/bin/");
     }
@@ -692,7 +690,7 @@ mod tests {
 
     #[test]
     fn full_command_from_argv() {
-        let view = EventDetailView::from_detail(&make_detail());
+        let view = EventDetailView::from(&make_detail());
         assert_eq!(view.full_command, "cat secret.txt");
     }
 
@@ -700,7 +698,7 @@ mod tests {
     fn tty_nr_zero_shows_dash() {
         let mut d = make_detail();
         d.tty_nr = Some(0);
-        let view = EventDetailView::from_detail(&d);
+        let view = EventDetailView::from(&d);
         assert_eq!(view.tty, "\u{2014}");
     }
 
@@ -708,7 +706,7 @@ mod tests {
     fn tty_nr_none_shows_dash() {
         let mut d = make_detail();
         d.tty_nr = None;
-        let view = EventDetailView::from_detail(&d);
+        let view = EventDetailView::from(&d);
         assert_eq!(view.tty, "\u{2014}");
     }
 }

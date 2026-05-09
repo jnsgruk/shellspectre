@@ -81,11 +81,11 @@ fn infinite_scroll_response(
     dir: SortDirection,
     page_size: u32,
 ) -> Response {
-    let paginated = Paginated::from_page(page);
+    let paginated = Paginated::from(page);
     let nav = ListNavigator::new(filter, sort, dir, page_size);
 
     let rows_template = EventRowsAppendFragment {
-        paginated: Paginated::from_page(page),
+        paginated: Paginated::from(page),
     };
     let sentinel_template = PaginationFragment { paginated, nav };
 
@@ -94,14 +94,18 @@ fn infinite_scroll_response(
 
     let rows_evt = Event::default()
         .event("datastar-patch-elements")
-        .data(sse_patch_elements(&rows_html, "#event-rows", "append"));
+        .data(sse_patch_elements(
+            &rows_html,
+            "#event-rows",
+            SseMergeMode::Append,
+        ));
 
     let sentinel_evt = Event::default()
         .event("datastar-patch-elements")
         .data(sse_patch_elements(
             &sentinel_html,
             "#load-more-sentinel",
-            "replace",
+            SseMergeMode::Replace,
         ));
 
     let stream = tokio_stream::iter(vec![Ok::<_, Infallible>(rows_evt), Ok(sentinel_evt)]);
@@ -154,9 +158,14 @@ async fn list_events(
         let template = EventListFragment { paginated, nav };
         match template.render() {
             Ok(html) => {
-                let evt = Event::default()
-                    .event("datastar-patch-elements")
-                    .data(sse_patch_elements(&html, "#event-list-container", "outer"));
+                let evt =
+                    Event::default()
+                        .event("datastar-patch-elements")
+                        .data(sse_patch_elements(
+                            &html,
+                            "#event-list-container",
+                            SseMergeMode::Outer,
+                        ));
                 let stream = tokio_stream::iter(vec![Ok::<_, Infallible>(evt)]);
                 Sse::new(stream)
                     .keep_alive(KeepAlive::default())
@@ -184,14 +193,38 @@ async fn list_events(
     }
 }
 
+/// Datastar v1 SSE merge modes for `datastar-patch-elements`.
+#[derive(Debug, Clone, Copy)]
+enum SseMergeMode {
+    /// Append elements inside the target.
+    Append,
+    /// Replace the target's inner HTML.
+    Replace,
+    /// Replace the target element itself (outerHTML).
+    Outer,
+    /// Prepend elements inside the target.
+    Prepend,
+}
+
+impl SseMergeMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Append => "append",
+            Self::Replace => "replace",
+            Self::Outer => "outer",
+            Self::Prepend => "prepend",
+        }
+    }
+}
+
 /// Format HTML as a Datastar v1 SSE `datastar-patch-elements` data payload.
-fn sse_patch_elements(html: &str, selector: &str, mode: &str) -> String {
+fn sse_patch_elements(html: &str, selector: &str, mode: SseMergeMode) -> String {
     let elements: String = html
         .lines()
         .map(|line| format!("elements {line}"))
         .collect::<Vec<_>>()
         .join("\n");
-    format!("selector {selector}\nmode {mode}\n{elements}")
+    format!("selector {selector}\nmode {}\n{elements}", mode.as_str())
 }
 
 pub fn routes() -> Router<AppState> {
@@ -275,7 +308,7 @@ async fn live_events(
         // Render each new event as an HTML table row.
         let mut fragments = String::new();
         for summary in &new_events {
-            let view = EventSummaryView::from_summary(summary);
+            let view = EventSummaryView::from(summary);
             let template = EventRowFragment { event: view };
             if let Ok(html) = template.render() {
                 fragments.push_str(&html);
@@ -291,7 +324,10 @@ async fn live_events(
             .map(|line| format!("elements {line}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let merge_data = format!("selector #event-rows\nmode prepend\n{elements_data}");
+        let merge_data = format!(
+            "selector #event-rows\nmode {}\n{elements_data}",
+            SseMergeMode::Prepend.as_str()
+        );
         let merge_evt = Event::default()
             .event("datastar-patch-elements")
             .data(merge_data)
@@ -309,11 +345,21 @@ async fn live_events(
     Sse::new(event_stream).keep_alive(KeepAlive::default())
 }
 
+/// Which I/O stream to return in the raw endpoint.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StreamKind {
+    /// Standard input (fd 0).
+    Stdin,
+    /// Standard output/error (fd 1, 2).
+    Stdout,
+}
+
 /// Query parameters for the raw IO endpoint.
 #[derive(Debug, Deserialize)]
 pub struct RawParams {
     /// Which stream to return.
-    pub stream: Option<String>,
+    pub stream: Option<StreamKind>,
 }
 
 /// `GET /api/v1/events/{id}/raw?stream=stdout`
@@ -334,18 +380,10 @@ async fn get_event_raw(
         }
     };
 
-    let stream = params.stream.as_deref().unwrap_or("stdout");
-    let raw: String = if stream == "stdin" {
-        detail.stdin_data.iter().map(|c| c.data.as_str()).collect()
-    } else if stream == "stdout" {
-        detail.stdout_data.iter().map(|c| c.data.as_str()).collect()
-    } else {
-        return (
-            StatusCode::BAD_REQUEST,
-            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-            "invalid stream; expected stdin or stdout",
-        )
-            .into_response();
+    let stream = params.stream.unwrap_or(StreamKind::Stdout);
+    let raw: String = match stream {
+        StreamKind::Stdin => detail.stdin_data.iter().map(|c| c.data.as_str()).collect(),
+        StreamKind::Stdout => detail.stdout_data.iter().map(|c| c.data.as_str()).collect(),
     };
 
     (
@@ -406,7 +444,7 @@ async fn get_event_detail(State(state): State<AppState>, Path(id): Path<i64>) ->
         }
     };
 
-    let view = EventDetailView::from_detail(&detail);
+    let view = EventDetailView::from(&detail);
     let template = EventDetailFragment { detail: view };
 
     match template.render() {

@@ -6,16 +6,11 @@ edition = "2024"
 [lints]
 workspace = true
 
-[[bin]]
-name = "shspectr-web"
-path = "src/main.rs"
-
 [dependencies]
 ansi-to-html = "0.2"
 anyhow.workspace = true
 askama = "0.13"
 axum = "0.8"
-clap.workspace = true
 r2d2 = "0.8"
 r2d2_sqlite = "0.28"
 rusqlite.workspace = true

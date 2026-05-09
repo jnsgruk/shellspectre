@@ -9,6 +9,7 @@ use crate::domain::listing::{ListRequest, Page};
 use crate::domain::repositories::EventRepository;
 use crate::infrastructure::database::DbPool;
 use crate::presentation::web::username::resolve_username;
+use shspectr_common::EventType;
 
 /// SQLite-backed event repository (read-only).
 pub struct SqlEventRepository {
@@ -118,7 +119,7 @@ fn build_where_clause(filter: &EventFilter) -> (String, Vec<Box<dyn rusqlite::ty
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
     // Default to exec events only in list view.
-    conditions.push("event_type = 'exec'".to_owned());
+    conditions.push(format!("event_type = {}", EventType::Exec.as_wire()));
 
     if let Some(ref fv) = filter.comm {
         let like_pattern = glob_to_like_pattern(&fv.value);
@@ -236,11 +237,19 @@ fn build_where_clause(filter: &EventFilter) -> (String, Vec<Box<dyn rusqlite::ty
 
 /// Map a row to an `EventSummary`.
 fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventSummary> {
+    let event_type_int: u32 = row.get(3)?;
+    let event_type = EventType::from_wire(event_type_int).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            3,
+            rusqlite::types::Type::Integer,
+            format!("unknown event type discriminant {event_type_int}").into(),
+        )
+    })?;
     Ok(EventSummary {
         id: row.get(0)?,
         timestamp: row.get(1)?,
         session_id: row.get(2)?,
-        event_type: row.get(3)?,
+        event_type,
         execution_id: row.get(4)?,
         pid: row.get(5)?,
         ppid: row.get(6)?,
@@ -260,7 +269,7 @@ fn fetch_io_chunks(conn: &rusqlite::Connection, detail: &mut EventDetail) -> Res
             "SELECT timestamp, fd, data, byte_count \
              FROM events \
              WHERE session_id = ?1 AND pid = ?2 AND execution_id = ?3 \
-               AND event_type IN ('read', 'write') \
+               AND event_type IN (?4, ?5) \
              ORDER BY id ASC",
         )
         .context("failed to prepare I/O query")?;
@@ -270,7 +279,9 @@ fn fetch_io_chunks(conn: &rusqlite::Connection, detail: &mut EventDetail) -> Res
             params![
                 detail.summary.session_id,
                 detail.summary.pid,
-                detail.summary.execution_id
+                detail.summary.execution_id,
+                EventType::Read.as_wire(),
+                EventType::Write.as_wire(),
             ],
             |row| {
                 Ok((
@@ -308,16 +319,22 @@ fn fetch_children(conn: &rusqlite::Connection, detail: &EventDetail) -> Result<V
                     EXISTS(SELECT 1 FROM events io \
                            WHERE io.session_id = e.session_id AND io.pid = e.pid \
                              AND io.execution_id = e.execution_id \
-                             AND io.event_type IN ('read', 'write') LIMIT 1) as has_io \
+                             AND io.event_type IN (?3, ?4) LIMIT 1) as has_io \
              FROM events e \
-             WHERE e.session_id = ?1 AND e.ppid = ?2 AND e.event_type = 'exec' \
+             WHERE e.session_id = ?1 AND e.ppid = ?2 AND e.event_type = ?5 \
              ORDER BY e.id ASC",
         )
         .context("failed to prepare children query")?;
 
     let rows = stmt
         .query_map(
-            params![detail.summary.session_id, detail.summary.pid],
+            params![
+                detail.summary.session_id,
+                detail.summary.pid,
+                EventType::Read.as_wire(),
+                EventType::Write.as_wire(),
+                EventType::Exec.as_wire(),
+            ],
             |row| {
                 Ok(ChildProcess {
                     id: row.get(0)?,
@@ -344,9 +361,13 @@ fn fetch_parent(
     conn.query_row(
         "SELECT id, comm, filename, argv \
          FROM events \
-         WHERE session_id = ?1 AND pid = ?2 AND event_type = 'exec' \
+         WHERE session_id = ?1 AND pid = ?2 AND event_type = ?3 \
          ORDER BY id DESC LIMIT 1",
-        params![detail.summary.session_id, detail.summary.ppid],
+        params![
+            detail.summary.session_id,
+            detail.summary.ppid,
+            EventType::Exec.as_wire(),
+        ],
         |row| {
             Ok(ParentProcess {
                 id: row.get(0)?,
@@ -428,11 +449,19 @@ impl EventRepository for SqlEventRepository {
 
         let result = stmt
             .query_row(params![id], |row| {
+                let event_type_int: u32 = row.get(3)?;
+                let event_type = EventType::from_wire(event_type_int).ok_or_else(|| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        3,
+                        rusqlite::types::Type::Integer,
+                        format!("unknown event type discriminant {event_type_int}").into(),
+                    )
+                })?;
                 let summary = EventSummary {
                     id: row.get(0)?,
                     timestamp: row.get(1)?,
                     session_id: row.get(2)?,
-                    event_type: row.get(3)?,
+                    event_type,
                     execution_id: row.get(4)?,
                     pid: row.get(5)?,
                     ppid: row.get(6)?,

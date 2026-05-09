@@ -7,17 +7,8 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 use crate::event::{ParsedExecEvent, ParsedExitEvent, ParsedIoEvent};
-
-/// Info needed to create a session row.
-pub struct SessionInfo<'a> {
-    pub session_id: &'a str,
-    pub pid: u32,
-    pub comm: &'a str,
-    pub uid: u32,
-    pub euid: u32,
-    pub tty_nr: u32,
-    pub cgroup_id: u64,
-}
+use crate::sink::{SessionInfo, Sink};
+use shspectr_common::{EventType, SessionId};
 
 /// A SQLite event sink.
 pub struct SqliteSink {
@@ -56,7 +47,7 @@ impl SqliteSink {
                  VALUES (?1, datetime('now'), ?2, ?3, ?4, ?5, ?6, ?7)",
             )?
             .execute(rusqlite::params![
-                info.session_id,
+                info.session_id.as_ref(),
                 info.pid,
                 info.comm,
                 info.uid,
@@ -69,16 +60,17 @@ impl SqliteSink {
     }
 
     /// Record an exec event.
-    pub fn insert_exec(&self, session_id: &str, event: &ParsedExecEvent) -> Result<()> {
+    pub fn insert_exec(&self, session_id: &SessionId, event: &ParsedExecEvent) -> Result<()> {
         let argv_json = serde_json::to_string(&event.argv).unwrap_or_default();
         self.conn
             .prepare_cached(
                 "INSERT INTO events (session_id, event_type, timestamp, pid, ppid, uid, gid, euid, comm, tty_nr, execution_id, filename, argv)
-                 VALUES (?1, 'exec', datetime('now'), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 VALUES (?1, ?2, datetime('now'), ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             )?
             .execute(
                 rusqlite::params![
-                    session_id,
+                    session_id.as_ref(),
+                    EventType::Exec.as_wire(),
                     event.pid,
                     event.ppid,
                     event.uid,
@@ -98,18 +90,19 @@ impl SqliteSink {
     /// Record an exit event and optionally close the session.
     pub fn insert_exit(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         event: &ParsedExitEvent,
         session_complete: bool,
     ) -> Result<()> {
         self.conn
             .prepare_cached(
                 "INSERT INTO events (session_id, event_type, timestamp, pid, ppid, uid, gid, euid, comm, tty_nr, execution_id, exit_code)
-                 VALUES (?1, 'exit', datetime('now'), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                 VALUES (?1, ?2, datetime('now'), ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             )?
             .execute(
                 rusqlite::params![
-                    session_id,
+                    session_id.as_ref(),
+                    EventType::Exit.as_wire(),
                     event.pid,
                     event.ppid,
                     event.uid,
@@ -130,22 +123,23 @@ impl SqliteSink {
                 "UPDATE events SET exit_code = ?1 \
                  WHERE id = ( \
                      SELECT id FROM events \
-                     WHERE session_id = ?2 AND pid = ?3 AND execution_id = ?4 AND event_type = 'exec' \
+                     WHERE session_id = ?2 AND pid = ?3 AND execution_id = ?4 AND event_type = ?5 \
                      ORDER BY id DESC LIMIT 1 \
                   )",
             )?
             .execute(rusqlite::params![
                 event.exit_code,
-                session_id,
+                session_id.as_ref(),
                 event.pid,
-                i64::try_from(event.execution_id).unwrap_or(i64::MAX)
+                i64::try_from(event.execution_id).unwrap_or(i64::MAX),
+                EventType::Exec.as_wire(),
             ])
             .context("backfill exit_code onto exec row")?;
 
         if session_complete {
             self.conn
                 .prepare_cached("UPDATE sessions SET ended_at = datetime('now') WHERE id = ?1")?
-                .execute(rusqlite::params![session_id])
+                .execute(rusqlite::params![session_id.as_ref()])
                 .context("update session ended_at")?;
         }
         Ok(())
@@ -154,9 +148,9 @@ impl SqliteSink {
     /// Record an I/O event.
     pub fn insert_io(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         event: &ParsedIoEvent,
-        event_type: &str,
+        event_type: EventType,
     ) -> Result<()> {
         let data_str = String::from_utf8_lossy(&event.data);
         self.conn
@@ -166,8 +160,8 @@ impl SqliteSink {
             )?
             .execute(
                 rusqlite::params![
-                    session_id,
-                    event_type,
+                    session_id.as_ref(),
+                    event_type.as_wire(),
                     event.pid,
                     event.ppid,
                     event.uid,
@@ -187,21 +181,83 @@ impl SqliteSink {
     }
 }
 
+impl Sink for SqliteSink {
+    fn on_exec(&self, session: &SessionInfo<'_>, event: &ParsedExecEvent) {
+        if let Err(e) = self.ensure_session(session) {
+            tracing::warn!(%e, "failed to ensure session");
+        }
+        if let Err(e) = self.insert_exec(session.session_id, event) {
+            tracing::warn!(%e, "failed to insert exec event");
+        }
+    }
+
+    fn on_exit(&self, session: &SessionInfo<'_>, event: &ParsedExitEvent, session_complete: bool) {
+        if let Err(e) = self.insert_exit(session.session_id, event, session_complete) {
+            tracing::warn!(%e, "failed to insert exit event");
+        }
+    }
+
+    fn on_io(&self, session: &SessionInfo<'_>, event: &ParsedIoEvent, event_type: EventType) {
+        if let Err(e) = self.insert_io(session.session_id, event, event_type) {
+            tracing::warn!(%e, "failed to insert io event");
+        }
+    }
+}
+
 fn ensure_schema_compat(conn: &Connection) -> Result<()> {
     let mut stmt = conn
         .prepare("PRAGMA table_info(events)")
         .context("inspect events schema")?;
-    let columns = stmt
-        .query_map([], |row| row.get::<_, String>(1))?
+    let columns: Vec<(String, String)> = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })?
         .collect::<std::result::Result<Vec<_>, _>>()
         .context("read events schema")?;
-    if !columns.iter().any(|column| column == "execution_id") {
+
+    if !columns.iter().any(|(name, _)| name == "execution_id") {
         conn.execute(
             "ALTER TABLE events ADD COLUMN execution_id INTEGER NOT NULL DEFAULT 0",
             [],
         )
         .context("add execution_id column")?;
     }
+
+    // Migrate event_type from TEXT to INTEGER if needed.
+    if let Some((_, col_type)) = columns.iter().find(|(name, _)| name == "event_type")
+        && col_type.eq_ignore_ascii_case("TEXT")
+    {
+        migrate_event_type_to_integer(conn)?;
+    }
+
+    Ok(())
+}
+
+/// Migrate the `event_type` column from TEXT to INTEGER by recreating the table.
+fn migrate_event_type_to_integer(conn: &Connection) -> Result<()> {
+    conn.execute_batch("ALTER TABLE events RENAME TO events_old;")
+        .context("rename events table for migration")?;
+
+    conn.execute_batch(shspectr_common::SCHEMA)
+        .context("create new events table with INTEGER event_type")?;
+
+    conn.execute_batch(
+        "INSERT INTO events (id, session_id, event_type, timestamp, pid, ppid, uid, gid, euid, \
+         comm, tty_nr, execution_id, filename, argv, fd, data, data_len, byte_count, exit_code) \
+         SELECT id, session_id, \
+         CASE event_type \
+           WHEN 'exec' THEN 0 WHEN 'read' THEN 2 WHEN 'write' THEN 3 WHEN 'exit' THEN 4 \
+         END, \
+         timestamp, pid, ppid, uid, gid, euid, comm, tty_nr, execution_id, \
+         filename, argv, fd, data, data_len, byte_count, exit_code \
+         FROM events_old;",
+    )
+    .context("copy events with integer event_type")?;
+
+    conn.execute_batch("DROP TABLE events_old;")
+        .context("drop old events table")?;
+
+    tracing::info!("migrated event_type column from TEXT to INTEGER");
     Ok(())
 }
 
@@ -209,8 +265,12 @@ fn ensure_schema_compat(conn: &Connection) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn sid(s: &str) -> SessionId {
+        SessionId::from(s)
+    }
+
     struct SessionInfoBuilder<'a> {
-        session_id: &'a str,
+        session_id: &'a SessionId,
         pid: u32,
         comm: &'a str,
         uid: u32,
@@ -221,7 +281,7 @@ mod tests {
 
     #[allow(dead_code)]
     impl<'a> SessionInfoBuilder<'a> {
-        fn new(session_id: &'a str) -> Self {
+        fn new(session_id: &'a SessionId) -> Self {
             Self {
                 session_id,
                 pid: 100,
@@ -477,14 +537,15 @@ mod tests {
     #[test]
     fn ensure_session_creates_row() -> Result<()> {
         let sink = SqliteSink::open_in_memory()?;
-        sink.ensure_session(&SessionInfoBuilder::new("ox_test1234").build())?;
+        let id = sid("ox_test1234");
+        sink.ensure_session(&SessionInfoBuilder::new(&id).build())?;
 
-        let (id, root_pid, uid): (String, i64, i64) = sink.conn.query_row(
+        let (id_str, root_pid, uid): (String, i64, i64) = sink.conn.query_row(
             "SELECT id, root_pid, uid FROM sessions WHERE id = ?1",
-            ["ox_test1234"],
+            [id.as_ref()],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
-        assert_eq!(id, "ox_test1234");
+        assert_eq!(id_str, "ox_test1234");
         assert_eq!(root_pid, 100);
         assert_eq!(uid, 1000);
         Ok(())
@@ -493,9 +554,10 @@ mod tests {
     #[test]
     fn ensure_session_idempotent() -> Result<()> {
         let sink = SqliteSink::open_in_memory()?;
-        sink.ensure_session(&SessionInfoBuilder::new("ox_test1234").build())?;
+        let id = sid("ox_test1234");
+        sink.ensure_session(&SessionInfoBuilder::new(&id).build())?;
         sink.ensure_session(
-            &SessionInfoBuilder::new("ox_test1234")
+            &SessionInfoBuilder::new(&id)
                 .pid(200)
                 .comm("zsh")
                 .uid(2000)
@@ -508,7 +570,7 @@ mod tests {
         // Should still have original values (INSERT OR IGNORE).
         let root_pid: i64 = sink.conn.query_row(
             "SELECT root_pid FROM sessions WHERE id = ?1",
-            ["ox_test1234"],
+            [id.as_ref()],
             |r| r.get(0),
         )?;
         assert_eq!(root_pid, 100);
@@ -518,16 +580,17 @@ mod tests {
     #[test]
     fn insert_exec_event() -> Result<()> {
         let sink = SqliteSink::open_in_memory()?;
-        sink.ensure_session(&SessionInfoBuilder::new("ox_abc").build())?;
-        sink.insert_exec("ox_abc", &ParsedExecEventBuilder::new().build())?;
+        let id = sid("ox_abc");
+        sink.ensure_session(&SessionInfoBuilder::new(&id).build())?;
+        sink.insert_exec(&id, &ParsedExecEventBuilder::new().build())?;
 
-        let (event_type, pid, execution_id, filename): (String, i64, i64, String) =
+        let (event_type, pid, execution_id, filename): (u32, i64, i64, String) =
             sink.conn.query_row(
                 "SELECT event_type, pid, execution_id, filename FROM events WHERE session_id = ?1",
-                ["ox_abc"],
+                [id.as_ref()],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )?;
-        assert_eq!(event_type, "exec");
+        assert_eq!(event_type, EventType::Exec.as_wire());
         assert_eq!(pid, 100);
         assert_eq!(execution_id, 500);
         assert_eq!(filename, "/usr/bin/ls");
@@ -537,9 +600,10 @@ mod tests {
     #[test]
     fn insert_exit_only_closes_session_when_requested() -> Result<()> {
         let sink = SqliteSink::open_in_memory()?;
-        sink.ensure_session(&SessionInfoBuilder::new("ox_abc").build())?;
+        let id = sid("ox_abc");
+        sink.ensure_session(&SessionInfoBuilder::new(&id).build())?;
         sink.insert_exit(
-            "ox_abc",
+            &id,
             &ParsedExitEventBuilder::new()
                 .comm("bash")
                 .exit_code(0)
@@ -549,7 +613,7 @@ mod tests {
 
         let ended_at: Option<String> = sink.conn.query_row(
             "SELECT ended_at FROM sessions WHERE id = ?1",
-            ["ox_abc"],
+            [id.as_ref()],
             |r| r.get(0),
         )?;
         assert!(
@@ -558,7 +622,7 @@ mod tests {
         );
 
         sink.insert_exit(
-            "ox_abc",
+            &id,
             &ParsedExitEventBuilder::new()
                 .pid(101)
                 .execution_id(501)
@@ -568,7 +632,7 @@ mod tests {
         )?;
         let ended_at: Option<String> = sink.conn.query_row(
             "SELECT ended_at FROM sessions WHERE id = ?1",
-            ["ox_abc"],
+            [id.as_ref()],
             |r| r.get(0),
         )?;
         assert!(ended_at.is_some(), "ended_at should be set on final exit");
@@ -578,7 +642,8 @@ mod tests {
     #[test]
     fn insert_io_event() -> Result<()> {
         let sink = SqliteSink::open_in_memory()?;
-        sink.ensure_session(&SessionInfoBuilder::new("ox_abc").build())?;
+        let id = sid("ox_abc");
+        sink.ensure_session(&SessionInfoBuilder::new(&id).build())?;
 
         let io = ParsedIoEvent {
             pid: 100,
@@ -594,15 +659,14 @@ mod tests {
             data: b"hello world\n".to_vec(),
             count: 12,
         };
-        sink.insert_io("ox_abc", &io, "write")?;
+        sink.insert_io(&id, &io, EventType::Write)?;
 
-        let (event_type, execution_id, fd, data): (String, i64, i64, String) =
-            sink.conn.query_row(
-                "SELECT event_type, execution_id, fd, data FROM events WHERE session_id = ?1",
-                ["ox_abc"],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )?;
-        assert_eq!(event_type, "write");
+        let (event_type, execution_id, fd, data): (u32, i64, i64, String) = sink.conn.query_row(
+            "SELECT event_type, execution_id, fd, data FROM events WHERE session_id = ?1",
+            [id.as_ref()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?;
+        assert_eq!(event_type, EventType::Write.as_wire());
         assert_eq!(execution_id, 500);
         assert_eq!(fd, 1);
         assert_eq!(data, "hello world\n");
@@ -612,18 +676,19 @@ mod tests {
     #[test]
     fn insert_exit_backfills_exit_code_on_exec_row() -> Result<()> {
         let sink = SqliteSink::open_in_memory()?;
-        sink.ensure_session(&SessionInfoBuilder::new("ox_abc").build())?;
-        sink.insert_exec("ox_abc", &ParsedExecEventBuilder::new().build())?;
+        let id = sid("ox_abc");
+        sink.ensure_session(&SessionInfoBuilder::new(&id).build())?;
+        sink.insert_exec(&id, &ParsedExecEventBuilder::new().build())?;
         sink.insert_exit(
-            "ox_abc",
+            &id,
             &ParsedExitEventBuilder::new().exit_code(42).build(),
             true,
         )?;
 
         // The exec row for pid 100 must now have exit_code = 42.
         let exit_code: Option<i64> = sink.conn.query_row(
-            "SELECT exit_code FROM events WHERE session_id = ?1 AND event_type = 'exec' AND pid = ?2",
-            rusqlite::params!["ox_abc", 100i64],
+            "SELECT exit_code FROM events WHERE session_id = ?1 AND event_type = ?2 AND pid = ?3",
+            rusqlite::params![id.as_ref(), EventType::Exec.as_wire(), 100i64],
             |r| r.get(0),
         )?;
         assert_eq!(
@@ -637,10 +702,11 @@ mod tests {
     #[test]
     fn query_events_by_session_and_type() -> Result<()> {
         let sink = SqliteSink::open_in_memory()?;
-        sink.ensure_session(&SessionInfoBuilder::new("ox_abc").build())?;
-        sink.insert_exec("ox_abc", &ParsedExecEventBuilder::new().build())?;
+        let id = sid("ox_abc");
+        sink.ensure_session(&SessionInfoBuilder::new(&id).build())?;
+        sink.insert_exec(&id, &ParsedExecEventBuilder::new().build())?;
         sink.insert_exit(
-            "ox_abc",
+            &id,
             &ParsedExitEventBuilder::new().exit_code(0).build(),
             true,
         )?;
@@ -648,14 +714,14 @@ mod tests {
         // Query using the index.
         let count: i64 = sink.conn.query_row(
             "SELECT COUNT(*) FROM events WHERE session_id = ?1 AND event_type = ?2",
-            rusqlite::params!["ox_abc", "exec"],
+            rusqlite::params![id.as_ref(), EventType::Exec.as_wire()],
             |r| r.get(0),
         )?;
         assert_eq!(count, 1);
 
         let total: i64 = sink.conn.query_row(
             "SELECT COUNT(*) FROM events WHERE session_id = ?1",
-            ["ox_abc"],
+            [id.as_ref()],
             |r| r.get(0),
         )?;
         assert_eq!(total, 2);
@@ -665,16 +731,17 @@ mod tests {
     #[test]
     fn insert_exit_backfills_matching_execution_only() -> Result<()> {
         let sink = SqliteSink::open_in_memory()?;
-        sink.ensure_session(&SessionInfoBuilder::new("ox_abc").build())?;
+        let id = sid("ox_abc");
+        sink.ensure_session(&SessionInfoBuilder::new(&id).build())?;
         sink.insert_exec(
-            "ox_abc",
+            &id,
             &ParsedExecEventBuilder::new()
                 .pid(100)
                 .execution_id(10)
                 .build(),
         )?;
         sink.insert_exec(
-            "ox_abc",
+            &id,
             &ParsedExecEventBuilder::new()
                 .pid(100)
                 .execution_id(11)
@@ -682,7 +749,7 @@ mod tests {
         )?;
 
         sink.insert_exit(
-            "ox_abc",
+            &id,
             &ParsedExitEventBuilder::new()
                 .pid(100)
                 .execution_id(10)
@@ -693,10 +760,13 @@ mod tests {
 
         let exit_codes: Vec<(i64, Option<i64>)> = {
             let mut stmt = sink.conn.prepare(
-                "SELECT execution_id, exit_code FROM events WHERE session_id = ?1 AND event_type = 'exec' ORDER BY execution_id ASC",
+                "SELECT execution_id, exit_code FROM events WHERE session_id = ?1 AND event_type = ?2 ORDER BY execution_id ASC",
             )?;
-            stmt.query_map(["ox_abc"], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<std::result::Result<Vec<_>, _>>()?
+            stmt.query_map(
+                rusqlite::params![id.as_ref(), EventType::Exec.as_wire()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?
         };
         assert_eq!(exit_codes, vec![(10, Some(7)), (11, None)]);
         Ok(())

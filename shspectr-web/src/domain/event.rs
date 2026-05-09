@@ -1,6 +1,7 @@
 //! Domain types for session events.
 
 use serde::Serialize;
+use shspectr_common::EventType;
 
 /// Summary of an event, used in list views.
 /// Maps to columns in the `events` table.
@@ -12,8 +13,8 @@ pub struct EventSummary {
     pub timestamp: String,
     /// `events.session_id` (TEXT NOT NULL).
     pub session_id: String,
-    /// `events.event_type` (TEXT NOT NULL) — "exec", "exit", "read", "write".
-    pub event_type: String,
+    /// `events.event_type` (INTEGER NOT NULL) — mapped to `EventType` enum.
+    pub event_type: EventType,
     /// `events.execution_id` (INTEGER NOT NULL).
     pub execution_id: u64,
     /// `events.pid` (INTEGER NOT NULL).

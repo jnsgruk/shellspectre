@@ -43,11 +43,7 @@ run = [
   "cargo +nightly clippy --manifest-path shspectr-ebpf/Cargo.toml -Z build-std=core --target bpfel-unknown-none -- -D warnings",
 ]
 
-[tasks.dev-web]
-description = "Run the web UI server standalone (no eBPF build needed)"
-run = "cargo run -p shspectr-web --"
-
 [tasks.dev]
 description = "Build and run shspectr with SQLite + web UI"
 depends = ["build"]
-run = "sudo ./target/debug/shspectr run --output sqlite --web --web-bind 0.0.0.0"
+run = "sudo ./target/debug/shspectr --output sqlite --web --web-bind 0.0.0.0"

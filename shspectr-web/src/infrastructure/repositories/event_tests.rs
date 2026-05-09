@@ -8,6 +8,8 @@ use crate::domain::filter::EventFilter;
 use crate::domain::listing::ListRequest;
 use crate::infrastructure::database::create_test_pool;
 
+use shspectr_common::EventType;
+
 use super::test_fixtures::{ExecEventRow, IoEventRow, SessionRow};
 
 #[test]
@@ -28,7 +30,7 @@ fn list_returns_exec_events_only() -> Result<()> {
 
     let page = repo.list(&ListRequest::default(), &EventFilter::default())?;
     assert_eq!(page.items.len(), 1, "should only return exec events");
-    assert_eq!(page.items[0].event_type, "exec");
+    assert_eq!(page.items[0].event_type, EventType::Exec);
     assert_eq!(page.total_items, 1);
     Ok(())
 }
@@ -294,17 +296,17 @@ fn get_detail_includes_io_data() -> Result<()> {
             .filename("/cat")
             .insert(&conn);
         IoEventRow::new("s1")
-            .event_type("read")
+            .event_type(EventType::Read)
             .fd(0)
             .data("input data")
             .insert(&conn);
         IoEventRow::new("s1")
-            .event_type("write")
+            .event_type(EventType::Write)
             .fd(1)
             .data("output line 1\n")
             .insert(&conn);
         IoEventRow::new("s1")
-            .event_type("write")
+            .event_type(EventType::Write)
             .fd(2)
             .data("error output\n")
             .insert(&conn);
@@ -314,7 +316,7 @@ fn get_detail_includes_io_data() -> Result<()> {
             .data("other process")
             .insert(&conn);
         conn.query_row(
-            "SELECT id FROM events WHERE event_type = 'exec' LIMIT 1",
+            "SELECT id FROM events WHERE event_type = 0 LIMIT 1",
             [],
             |r| r.get::<_, i64>(0),
         )?
@@ -352,19 +354,19 @@ fn get_detail_scopes_io_to_matching_execution_id() -> Result<()> {
         IoEventRow::new("s1")
             .pid(100)
             .execution_id(10)
-            .event_type("write")
+            .event_type(EventType::Write)
             .fd(1)
             .data("first exec")
             .insert(&conn);
         IoEventRow::new("s1")
             .pid(100)
             .execution_id(11)
-            .event_type("write")
+            .event_type(EventType::Write)
             .fd(1)
             .data("second exec")
             .insert(&conn);
         conn.query_row(
-            "SELECT id FROM events WHERE event_type = 'exec' AND execution_id = 11 LIMIT 1",
+            "SELECT id FROM events WHERE event_type = 0 AND execution_id = 11 LIMIT 1",
             [],
             |r| r.get::<_, i64>(0),
         )?
@@ -890,7 +892,7 @@ fn get_detail_includes_children() -> Result<()> {
             .filename("/unrelated")
             .insert(&conn);
         conn.query_row(
-            "SELECT id FROM events WHERE pid = 100 AND event_type = 'exec' LIMIT 1",
+            "SELECT id FROM events WHERE pid = 100 AND event_type = 0 LIMIT 1",
             [],
             |r| r.get::<_, i64>(0),
         )?
@@ -927,7 +929,7 @@ fn get_detail_includes_parent() -> Result<()> {
             .filename("/usr/bin/ls")
             .insert(&conn);
         conn.query_row(
-            "SELECT id FROM events WHERE pid = 200 AND event_type = 'exec' LIMIT 1",
+            "SELECT id FROM events WHERE pid = 200 AND event_type = 0 LIMIT 1",
             [],
             |r| r.get::<_, i64>(0),
         )?
@@ -976,7 +978,7 @@ fn get_detail_child_has_io_flag() -> Result<()> {
             .filename("/true")
             .insert(&conn);
         conn.query_row(
-            "SELECT id FROM events WHERE pid = 100 AND event_type = 'exec' LIMIT 1",
+            "SELECT id FROM events WHERE pid = 100 AND event_type = 0 LIMIT 1",
             [],
             |r| r.get::<_, i64>(0),
         )?

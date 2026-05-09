@@ -19,7 +19,7 @@ fn insert_test_exec(conn: &rusqlite::Connection, session_id: &str, pid: u32, com
     conn.execute(
         "INSERT INTO events \
          (session_id, event_type, timestamp, execution_id, pid, ppid, uid, gid, euid, comm, filename, argv, exit_code) \
-         VALUES (?1, 'exec', datetime('now'), ?2, ?2, 1, 1000, 1000, 1000, ?3, ?4, '[]', 0)",
+         VALUES (?1, 0, datetime('now'), ?2, ?2, 1, 1000, 1000, 1000, ?3, ?4, '[]', 0)",
         params![session_id, pid, comm, filename],
     )
     .expect("insert test exec event");

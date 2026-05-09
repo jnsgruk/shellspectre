@@ -11,16 +11,18 @@
 
 use std::collections::HashMap;
 
+use shspectr_common::SessionId;
+
 /// Length of the random suffix in session IDs.
-pub(crate) const SESSION_ID_SUFFIX_LEN: usize = 8;
+pub(crate) const SESSION_ID_SUFFIX_LEN: usize = SessionId::SUFFIX_LEN;
 
 /// Prefix for all session IDs.
-pub(crate) const SESSION_ID_PREFIX: &str = "ox_";
+pub(crate) const SESSION_ID_PREFIX: &str = SessionId::PREFIX;
 
 /// Information about a tracked process.
 #[derive(Debug, Clone)]
 struct ProcessInfo {
-    session_id: String,
+    session_id: SessionId,
     ppid: u32,
     tty_nr: u32,
     comm: String,
@@ -31,18 +33,18 @@ struct ProcessInfo {
 /// short gaps between observed child processes on the same terminal.
 #[derive(Debug)]
 struct TtySession {
-    session_id: String,
+    session_id: SessionId,
 }
 
 /// Result of removing a tracked process on exit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExitInfo {
-    pub session_id: String,
+    pub session_id: SessionId,
     pub session_complete: bool,
 }
 
 /// Correlates events into logical sessions.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct SessionCorrelator {
     /// Maps pid → process info (including session_id).
     pid_map: HashMap<u32, ProcessInfo>,
@@ -61,21 +63,13 @@ pub struct EventInfo {
 }
 
 impl SessionCorrelator {
-    /// Create a new empty correlator.
-    pub fn new() -> Self {
-        Self {
-            pid_map: HashMap::new(),
-            tty_sessions: HashMap::new(),
-        }
-    }
-
     /// Record an execve event and return the assigned session ID.
     ///
     /// Session assignment priority:
     /// 1. If the process has a non-zero `tty_nr`, group by PTY.
     /// 2. If the parent PID is tracked, inherit the parent's session.
     /// 3. Otherwise, create a new singleton session.
-    pub fn on_exec(&mut self, info: &EventInfo) -> &str {
+    pub fn on_exec(&mut self, info: &EventInfo) -> &SessionId {
         // Re-exec stays in the same session but must refresh process metadata.
         if let Some(existing) = self.pid_map.get_mut(&info.pid) {
             existing.ppid = info.ppid;
@@ -104,7 +98,7 @@ impl SessionCorrelator {
     /// Look up the session ID for a process without creating a new entry.
     /// Used for I/O and exit events that should be correlated to an existing
     /// session if possible.
-    pub fn session_for(&mut self, info: &EventInfo) -> &str {
+    pub fn session_for(&mut self, info: &EventInfo) -> &SessionId {
         if !self.pid_map.contains_key(&info.pid) {
             // Process wasn't seen via execve — try to correlate anyway.
             let session_id = self.resolve_session(info);
@@ -161,7 +155,7 @@ impl SessionCorrelator {
     }
 
     /// Resolve which session a process belongs to.
-    fn resolve_session(&mut self, info: &EventInfo) -> String {
+    fn resolve_session(&mut self, info: &EventInfo) -> SessionId {
         // 1. PTY grouping: non-zero tty_nr → share session with same TTY.
         if info.tty_nr != 0 {
             if let Some(tty) = self.tty_sessions.get_mut(&info.tty_nr) {
@@ -201,7 +195,7 @@ impl SessionCorrelator {
 }
 
 /// Generate a session ID like `ox_k7m3qx9p`.
-fn generate_session_id() -> String {
+fn generate_session_id() -> SessionId {
     let mut buf = [0u8; SESSION_ID_SUFFIX_LEN];
     // Panicking is appropriate: failure indicates a catastrophic environment (e.g. seccomp blocking getrandom(2)).
     #[allow(clippy::expect_used)]
@@ -214,7 +208,7 @@ fn generate_session_id() -> String {
         .map(|b| charset[(*b as usize) % charset.len()] as char)
         .collect();
 
-    format!("{SESSION_ID_PREFIX}{suffix}")
+    SessionId::from(format!("{SESSION_ID_PREFIX}{suffix}"))
 }
 
 #[cfg(test)]
@@ -239,9 +233,10 @@ mod tests {
     #[test]
     fn session_id_format() {
         let id = generate_session_id();
-        assert!(id.starts_with("ox_"), "should start with ox_: {id}");
-        assert_eq!(id.len(), 3 + SESSION_ID_SUFFIX_LEN);
-        assert!(id[3..].chars().all(|c| c.is_ascii_alphanumeric()));
+        let s = id.as_ref();
+        assert!(s.starts_with("ox_"), "should start with ox_: {id}");
+        assert_eq!(s.len(), 3 + SESSION_ID_SUFFIX_LEN);
+        assert!(s[3..].chars().all(|c| c.is_ascii_alphanumeric()));
     }
 
     #[test]
@@ -253,57 +248,57 @@ mod tests {
 
     #[test]
     fn pty_processes_share_session() {
-        let mut c = SessionCorrelator::new();
-        let s1 = c.on_exec(&ei(100, 1, 42)).to_string();
-        let s2 = c.on_exec(&ei(200, 1, 42)).to_string();
+        let mut c = SessionCorrelator::default();
+        let s1 = c.on_exec(&ei(100, 1, 42)).clone();
+        let s2 = c.on_exec(&ei(200, 1, 42)).clone();
         assert_eq!(s1, s2, "same tty_nr should yield same session");
     }
 
     #[test]
     fn different_ptys_get_different_sessions() {
-        let mut c = SessionCorrelator::new();
-        let s1 = c.on_exec(&ei(100, 1, 42)).to_string();
-        let s2 = c.on_exec(&ei(200, 1, 43)).to_string();
+        let mut c = SessionCorrelator::default();
+        let s1 = c.on_exec(&ei(100, 1, 42)).clone();
+        let s2 = c.on_exec(&ei(200, 1, 43)).clone();
         assert_ne!(s1, s2, "different tty_nr should yield different sessions");
     }
 
     #[test]
     fn child_inherits_parent_session() {
-        let mut c = SessionCorrelator::new();
-        let parent_sid = c.on_exec(&ei(100, 1, 0)).to_string();
-        let child_sid = c.on_exec(&ei(200, 100, 0)).to_string();
+        let mut c = SessionCorrelator::default();
+        let parent_sid = c.on_exec(&ei(100, 1, 0)).clone();
+        let child_sid = c.on_exec(&ei(200, 100, 0)).clone();
         assert_eq!(parent_sid, child_sid, "child should inherit parent session");
     }
 
     #[test]
     fn grandchild_inherits_session() {
-        let mut c = SessionCorrelator::new();
-        let s1 = c.on_exec(&ei(100, 1, 0)).to_string();
-        let s2 = c.on_exec(&ei(200, 100, 0)).to_string();
-        let s3 = c.on_exec(&ei(300, 200, 0)).to_string();
+        let mut c = SessionCorrelator::default();
+        let s1 = c.on_exec(&ei(100, 1, 0)).clone();
+        let s2 = c.on_exec(&ei(200, 100, 0)).clone();
+        let s3 = c.on_exec(&ei(300, 200, 0)).clone();
         assert_eq!(s1, s2);
         assert_eq!(s2, s3, "grandchild should inherit through chain");
     }
 
     #[test]
     fn unknown_parent_gets_singleton() {
-        let mut c = SessionCorrelator::new();
-        let s1 = c.on_exec(&ei(100, 999, 0)).to_string();
-        let s2 = c.on_exec(&ei(200, 998, 0)).to_string();
+        let mut c = SessionCorrelator::default();
+        let s1 = c.on_exec(&ei(100, 999, 0)).clone();
+        let s2 = c.on_exec(&ei(200, 998, 0)).clone();
         assert_ne!(s1, s2, "unrelated processes should get different sessions");
     }
 
     #[test]
     fn reexec_keeps_session() {
-        let mut c = SessionCorrelator::new();
-        let s1 = c.on_exec(&ei(100, 1, 42)).to_string();
-        let s2 = c.on_exec(&ei(100, 1, 42)).to_string();
+        let mut c = SessionCorrelator::default();
+        let s1 = c.on_exec(&ei(100, 1, 42)).clone();
+        let s2 = c.on_exec(&ei(100, 1, 42)).clone();
         assert_eq!(s1, s2, "re-exec should keep existing session");
     }
 
     #[test]
     fn reexec_refreshes_process_metadata_and_execution_id() {
-        let mut c = SessionCorrelator::new();
+        let mut c = SessionCorrelator::default();
         c.on_exec(&ei_comm(100, 1, 42, "bash"));
         c.on_exec(&EventInfo {
             pid: 100,
@@ -324,8 +319,8 @@ mod tests {
 
     #[test]
     fn on_exit_removes_process() {
-        let mut c = SessionCorrelator::new();
-        let sid = c.on_exec(&ei(100, 1, 0)).to_string();
+        let mut c = SessionCorrelator::default();
+        let sid = c.on_exec(&ei(100, 1, 0)).clone();
         let removed = c.on_exit(100);
         assert_eq!(
             removed,
@@ -339,37 +334,37 @@ mod tests {
 
     #[test]
     fn on_exit_unknown_pid_returns_none() {
-        let mut c = SessionCorrelator::new();
+        let mut c = SessionCorrelator::default();
         assert_eq!(c.on_exit(999), None);
     }
 
     #[test]
     fn session_for_untracked_process_creates_entry() {
-        let mut c = SessionCorrelator::new();
-        let sid = c.session_for(&ei(100, 1, 0)).to_string();
-        assert!(sid.starts_with("ox_"));
+        let mut c = SessionCorrelator::default();
+        let sid = c.session_for(&ei(100, 1, 0)).clone();
+        assert!(sid.as_ref().starts_with("ox_"));
         assert_eq!(c.tracked_count(), 1);
     }
 
     #[test]
     fn session_for_tracked_process_returns_existing() {
-        let mut c = SessionCorrelator::new();
-        let s1 = c.on_exec(&ei(100, 1, 42)).to_string();
-        let s2 = c.session_for(&ei(100, 1, 42)).to_string();
+        let mut c = SessionCorrelator::default();
+        let s1 = c.on_exec(&ei(100, 1, 42)).clone();
+        let s2 = c.session_for(&ei(100, 1, 42)).clone();
         assert_eq!(s1, s2);
     }
 
     #[test]
     fn io_event_on_pty_process_inherits_session() {
-        let mut c = SessionCorrelator::new();
-        let shell_sid = c.on_exec(&ei(100, 1, 42)).to_string();
-        let io_sid = c.session_for(&ei(200, 100, 42)).to_string();
+        let mut c = SessionCorrelator::default();
+        let shell_sid = c.on_exec(&ei(100, 1, 42)).clone();
+        let io_sid = c.session_for(&ei(200, 100, 42)).clone();
         assert_eq!(shell_sid, io_sid);
     }
 
     #[test]
     fn ancestor_comms_walks_chain() {
-        let mut c = SessionCorrelator::new();
+        let mut c = SessionCorrelator::default();
         c.on_exec(&ei_comm(1, 0, 0, "systemd"));
         c.on_exec(&ei_comm(100, 1, 0, "sshd"));
         c.on_exec(&ei_comm(200, 100, 0, "bash"));
@@ -381,13 +376,13 @@ mod tests {
 
     #[test]
     fn ancestor_comms_empty_for_unknown() {
-        let c = SessionCorrelator::new();
+        let c = SessionCorrelator::default();
         assert!(c.ancestor_comms(999).is_empty());
     }
 
     #[test]
     fn tty_session_entry_persists_after_last_process_exits() {
-        let mut c = SessionCorrelator::new();
+        let mut c = SessionCorrelator::default();
         c.on_exec(&ei(100, 1, 5));
         assert_eq!(c.tty_session_count(), 1);
         let exit = c.on_exit(100).expect("tracked process should exit");
@@ -404,7 +399,7 @@ mod tests {
 
     #[test]
     fn tty_session_entry_retained_while_processes_remain() {
-        let mut c = SessionCorrelator::new();
+        let mut c = SessionCorrelator::default();
         c.on_exec(&ei(100, 1, 5));
         c.on_exec(&ei(101, 1, 5));
         assert_eq!(c.tty_session_count(), 1);
@@ -421,7 +416,7 @@ mod tests {
 
     #[test]
     fn tty_session_count_zero_for_tty_nr_zero() {
-        let mut c = SessionCorrelator::new();
+        let mut c = SessionCorrelator::default();
         c.on_exec(&ei(100, 1, 0));
         assert_eq!(
             c.tty_session_count(),
@@ -434,13 +429,13 @@ mod tests {
 
     #[test]
     fn pty_session_survives_gap_between_commands() {
-        let mut c = SessionCorrelator::new();
-        let first = c.on_exec(&ei_comm(100, 1, 9, "ls")).to_string();
+        let mut c = SessionCorrelator::default();
+        let first = c.on_exec(&ei_comm(100, 1, 9, "ls")).clone();
         let exit = c.on_exit(100).expect("tracked process should exit");
         assert_eq!(exit.session_id, first);
         assert!(!exit.session_complete);
 
-        let second = c.on_exec(&ei_comm(200, 1, 9, "whoami")).to_string();
+        let second = c.on_exec(&ei_comm(200, 1, 9, "whoami")).clone();
         assert_eq!(
             second, first,
             "same tty_nr should keep one session across command gaps"
@@ -449,9 +444,9 @@ mod tests {
 
     #[test]
     fn non_pty_session_only_completes_when_last_process_exits() {
-        let mut c = SessionCorrelator::new();
-        let session_id = c.on_exec(&ei(100, 1, 0)).to_string();
-        let child_session = c.on_exec(&ei(200, 100, 0)).to_string();
+        let mut c = SessionCorrelator::default();
+        let session_id = c.on_exec(&ei(100, 1, 0)).clone();
+        let child_session = c.on_exec(&ei(200, 100, 0)).clone();
         assert_eq!(child_session, session_id);
 
         let parent_exit = c.on_exit(100).expect("parent should be tracked");

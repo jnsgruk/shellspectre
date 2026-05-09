@@ -22,7 +22,7 @@ fn seed_event_with_io_for_session(pool: &DbPool, session_id: &str) -> i64 {
     conn.execute(
         "INSERT INTO events \
          (session_id, event_type, timestamp, execution_id, pid, ppid, uid, gid, euid, comm, filename, argv, exit_code, tty_nr) \
-         VALUES (?1, 'exec', '2026-05-10T14:32:01', 4821, 4821, 4800, 1000, 1000, 1000, 'cat', '/usr/bin/cat', \
+         VALUES (?1, 0, '2026-05-10T14:32:01', 4821, 4821, 4800, 1000, 1000, 1000, 'cat', '/usr/bin/cat', \
                  '[\"cat\",\"secret.txt\"]', 0, ?2)",
         params![session_id, 0x8803u32], // pts/3
     )
@@ -30,7 +30,7 @@ fn seed_event_with_io_for_session(pool: &DbPool, session_id: &str) -> i64 {
 
     let id: i64 = conn
         .query_row(
-            "SELECT id FROM events WHERE event_type = 'exec' LIMIT 1",
+            "SELECT id FROM events WHERE event_type = 0 LIMIT 1",
             [],
             |r| r.get(0),
         )
@@ -40,7 +40,7 @@ fn seed_event_with_io_for_session(pool: &DbPool, session_id: &str) -> i64 {
     conn.execute(
         "INSERT INTO events \
          (session_id, event_type, timestamp, execution_id, pid, ppid, uid, gid, euid, fd, data, data_len, byte_count) \
-         VALUES (?1, 'write', '2026-05-10T14:32:02', 4821, 4821, 4800, 1000, 1000, 1000, 1, 'TOP SECRET\n', 11, 11)",
+         VALUES (?1, 3, '2026-05-10T14:32:02', 4821, 4821, 4800, 1000, 1000, 1000, 1, 'TOP SECRET\n', 11, 11)",
         params![session_id],
     )
     .expect("insert io");
@@ -129,7 +129,7 @@ async fn detail_no_io_shows_message() {
     conn.execute(
         "INSERT INTO events \
          (session_id, event_type, timestamp, execution_id, pid, ppid, uid, gid, euid, comm) \
-         VALUES ('s2', 'exec', datetime('now'), 100, 100, 1, 1000, 1000, 1000, 'ls')",
+         VALUES ('s2', 0, datetime('now'), 100, 100, 1, 1000, 1000, 1000, 'ls')",
         [],
     )
     .expect("insert event");
@@ -195,8 +195,12 @@ async fn raw_invalid_stream_returns_400() {
     .expect("request");
 
     assert_eq!(resp.status(), 400);
+    // Axum returns a 400 for invalid query parameter enum values.
     let body = resp.text().await.expect("body");
-    assert!(body.contains("invalid stream"));
+    assert!(
+        body.contains("stream"),
+        "error response should mention the invalid field: {body}"
+    );
 }
 
 #[tokio::test]

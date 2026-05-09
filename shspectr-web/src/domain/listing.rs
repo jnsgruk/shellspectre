@@ -1,6 +1,7 @@
 //! Generic pagination and sorting types.
 
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// Sort direction.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -32,6 +33,15 @@ impl SortDirection {
     }
 }
 
+impl fmt::Display for SortDirection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Asc => f.write_str("asc"),
+            Self::Desc => f.write_str("desc"),
+        }
+    }
+}
+
 /// Columns that events can be sorted by.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -53,6 +63,12 @@ impl EventSortKey {
             Self::Comm => "comm",
             Self::ExitCode => "exit_code",
         }
+    }
+}
+
+impl fmt::Display for EventSortKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_sql_column())
     }
 }
 
@@ -252,5 +268,18 @@ mod tests {
         assert_eq!(EventSortKey::Timestamp.as_sql_column(), "timestamp");
         assert_eq!(EventSortKey::Comm.as_sql_column(), "comm");
         assert_eq!(EventSortKey::ExitCode.as_sql_column(), "exit_code");
+    }
+
+    #[test]
+    fn sort_direction_display() {
+        assert_eq!(SortDirection::Asc.to_string(), "asc");
+        assert_eq!(SortDirection::Desc.to_string(), "desc");
+    }
+
+    #[test]
+    fn event_sort_key_display() {
+        assert_eq!(EventSortKey::Timestamp.to_string(), "timestamp");
+        assert_eq!(EventSortKey::Comm.to_string(), "comm");
+        assert_eq!(EventSortKey::ExitCode.to_string(), "exit_code");
     }
 }

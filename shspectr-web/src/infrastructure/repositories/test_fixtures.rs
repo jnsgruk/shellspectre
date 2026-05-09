@@ -1,6 +1,7 @@
 //! Test fixture builders for repository integration tests.
 
 use rusqlite::params;
+use shspectr_common::EventType;
 
 #[allow(dead_code)]
 pub(super) struct SessionRow<'a> {
@@ -65,9 +66,9 @@ impl<'a> ExecEventRow<'a> {
         conn.execute(
             "INSERT INTO events \
              (session_id, event_type, timestamp, execution_id, pid, ppid, uid, gid, euid, tty_nr, comm, filename, argv, exit_code) \
-             VALUES (?1, 'exec', datetime('now'), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             VALUES (?1, ?2, datetime('now'), ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
-                self.session_id, self.execution_id, self.pid, self.ppid, self.uid, self.gid, self.euid,
+                self.session_id, EventType::Exec.as_wire(), self.execution_id, self.pid, self.ppid, self.uid, self.gid, self.euid,
                 self.tty_nr, self.comm, self.filename, self.argv, self.exit_code,
             ],
         )
@@ -79,7 +80,7 @@ pub(super) struct IoEventRow<'a> {
     pub session_id: &'a str,
     pub execution_id: u64,
     pub pid: u32,
-    pub event_type: &'a str,
+    pub event_type: EventType,
     pub fd: u32,
     pub data: &'a str,
 }
@@ -87,11 +88,11 @@ pub(super) struct IoEventRow<'a> {
 #[rustfmt::skip]
 impl<'a> IoEventRow<'a> {
     pub fn new(session_id: &'a str) -> Self {
-        Self { session_id, execution_id: 100, pid: 100, event_type: "write", fd: 1, data: "" }
+        Self { session_id, execution_id: 100, pid: 100, event_type: EventType::Write, fd: 1, data: "" }
     }
     pub fn execution_id(mut self, v: u64) -> Self { self.execution_id = v; self }
     pub fn pid(mut self, v: u32) -> Self { self.pid = v; self }
-    pub fn event_type(mut self, v: &'a str) -> Self { self.event_type = v; self }
+    pub fn event_type(mut self, v: EventType) -> Self { self.event_type = v; self }
     pub fn fd(mut self, v: u32) -> Self { self.fd = v; self }
     pub fn data(mut self, v: &'a str) -> Self { self.data = v; self }
     pub fn insert(self, conn: &rusqlite::Connection) {
@@ -100,7 +101,7 @@ impl<'a> IoEventRow<'a> {
              (session_id, event_type, timestamp, execution_id, pid, ppid, uid, gid, euid, fd, data, data_len, byte_count) \
              VALUES (?1, ?2, datetime('now'), ?3, ?4, 1, 1000, 1000, 1000, ?5, ?6, ?7, ?8)",
             params![
-                self.session_id, self.event_type, self.execution_id, self.pid, self.fd,
+                self.session_id, self.event_type.as_wire(), self.execution_id, self.pid, self.fd,
                 self.data, self.data.len(), self.data.len(),
             ],
         )

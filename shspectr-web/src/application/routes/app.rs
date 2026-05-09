@@ -46,7 +46,7 @@ async fn index(State(state): State<AppState>, Query(params): Query<IndexParams>)
         }
     };
 
-    let paginated = Paginated::from_page(&page);
+    let paginated = Paginated::from(&page);
     let nav = ListNavigator::new(&filter, req.sort, req.direction, req.page_size);
 
     let template = IndexTemplate {

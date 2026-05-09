@@ -6,6 +6,6 @@ After=network.target
 Type=simple
 Environment=RUST_LOG=info
 Environment=SHSPECTR_EBPF_PATH=/usr/local/lib/shspectr/shspectr-ebpf
-ExecStart=/usr/local/bin/shspectr run --output sqlite --db-path /tmp/shspectr-test.db --web
+ExecStart=/usr/local/bin/shspectr --output sqlite --db-path /tmp/shspectr-test.db --web
 StandardInput=null
 Restart=no

@@ -1,10 +1,12 @@
 //! Event parsing: converts raw ring buffer bytes into structured Rust types.
 //!
-//! All functions in this module are pure — they take byte slices and return
-//! structured data, with no I/O side effects. This makes them straightforward
-//! to unit test with synthetic data.
+//! Each parsed event type implements `TryFrom<&[u8]>`, producing structured
+//! data from raw ring buffer bytes with no I/O side effects. This makes them
+//! straightforward to unit test with synthetic data.
 
-use shspectr_common::{EventHeader, EventType, ExecEvent, ExitEvent, IoEvent, MAX_ARGV_COUNT};
+use shspectr_common::{
+    EventHeader, EventType, ExecEvent, ExitEvent, IoEvent, MAX_ARGV_COUNT, ParseError,
+};
 
 /// A parsed exec event with owned string fields, ready for logging or
 /// serialization.
@@ -24,56 +26,54 @@ pub struct ParsedExecEvent {
     pub retval: i64,
 }
 
-/// Parse a raw exec event from ring buffer bytes.
-///
-/// Returns `None` if the buffer is too short.
-pub fn parse_exec_event(data: &[u8]) -> Option<ParsedExecEvent> {
-    let header = parse_header(data)?;
-    if header.decoded_event_type()? != EventType::Exec {
-        return None;
+impl TryFrom<&[u8]> for ParsedExecEvent {
+    type Error = ParseError;
+
+    fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
+        let header = EventHeader::try_from(data)?;
+        let event_type = header
+            .decoded_event_type()
+            .ok_or(ParseError::InvalidEventType(header.event_type))?;
+        if event_type != EventType::Exec {
+            return Err(ParseError::UnexpectedEventType {
+                expected: "Exec",
+                got: header.event_type,
+            });
+        }
+
+        let need = core::mem::size_of::<ExecEvent>();
+        if data.len() < need {
+            return Err(ParseError::BufferTooShort {
+                need,
+                got: data.len(),
+            });
+        }
+
+        // SAFETY: ExecEvent is repr(C), we verified the length, and use
+        // read_unaligned because ring buffer data may not be aligned.
+        let event = unsafe { core::ptr::read_unaligned(data.as_ptr().cast::<ExecEvent>()) };
+        let header = &event.header;
+
+        let arg_count = event.argc as usize;
+        let argv = (0..arg_count.min(MAX_ARGV_COUNT))
+            .map(|i| cstr_from_bytes(&event.argv[i]))
+            .collect();
+
+        Ok(Self {
+            pid: header.pid,
+            ppid: header.ppid,
+            uid: header.uid,
+            gid: header.gid,
+            euid: header.euid,
+            comm: cstr_from_bytes(&header.comm),
+            tty_nr: header.tty_nr,
+            cgroup_id: header.cgroup_id,
+            execution_id: header.execution_id,
+            filename: cstr_from_bytes(&event.filename),
+            argv,
+            retval: event.retval,
+        })
     }
-    if data.len() < core::mem::size_of::<ExecEvent>() {
-        return None;
-    }
-
-    // SAFETY: ExecEvent is repr(C), we verified the length, and use
-    // read_unaligned because ring buffer data may not be aligned.
-    let event = unsafe { core::ptr::read_unaligned(data.as_ptr().cast::<ExecEvent>()) };
-    let header = &event.header;
-
-    let arg_count = event.argc as usize;
-    let argv = (0..arg_count.min(MAX_ARGV_COUNT))
-        .map(|i| cstr_from_bytes(&event.argv[i]))
-        .collect();
-
-    Some(ParsedExecEvent {
-        pid: header.pid,
-        ppid: header.ppid,
-        uid: header.uid,
-        gid: header.gid,
-        euid: header.euid,
-        comm: cstr_from_bytes(&header.comm),
-        tty_nr: header.tty_nr,
-        cgroup_id: header.cgroup_id,
-        execution_id: header.execution_id,
-        filename: cstr_from_bytes(&event.filename),
-        argv,
-        retval: event.retval,
-    })
-}
-
-/// Parse the event header from raw ring buffer bytes.
-///
-/// Returns `None` if the buffer is too short.
-pub fn parse_header(data: &[u8]) -> Option<EventHeader> {
-    if data.len() < core::mem::size_of::<EventHeader>() {
-        return None;
-    }
-
-    // SAFETY: EventHeader is repr(C), we verified the length.
-    let header = unsafe { core::ptr::read_unaligned(data.as_ptr().cast::<EventHeader>()) };
-    header.decoded_event_type()?;
-    Some(header)
 }
 
 /// A parsed exit event with fields ready for logging or serialization.
@@ -91,35 +91,47 @@ pub struct ParsedExitEvent {
     pub exit_code: i32,
 }
 
-/// Parse a raw exit event from ring buffer bytes.
-///
-/// Returns `None` if the buffer is too short.
-pub fn parse_exit_event(data: &[u8]) -> Option<ParsedExitEvent> {
-    let header = parse_header(data)?;
-    if header.decoded_event_type()? != EventType::Exit {
-        return None;
-    }
-    if data.len() < core::mem::size_of::<ExitEvent>() {
-        return None;
-    }
+impl TryFrom<&[u8]> for ParsedExitEvent {
+    type Error = ParseError;
 
-    // SAFETY: ExitEvent is repr(C), we verified the length, and use
-    // read_unaligned because ring buffer data may not be aligned.
-    let event = unsafe { core::ptr::read_unaligned(data.as_ptr().cast::<ExitEvent>()) };
-    let header = &event.header;
+    fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
+        let header = EventHeader::try_from(data)?;
+        let event_type = header
+            .decoded_event_type()
+            .ok_or(ParseError::InvalidEventType(header.event_type))?;
+        if event_type != EventType::Exit {
+            return Err(ParseError::UnexpectedEventType {
+                expected: "Exit",
+                got: header.event_type,
+            });
+        }
 
-    Some(ParsedExitEvent {
-        pid: header.pid,
-        ppid: header.ppid,
-        uid: header.uid,
-        gid: header.gid,
-        euid: header.euid,
-        comm: cstr_from_bytes(&header.comm),
-        tty_nr: header.tty_nr,
-        cgroup_id: header.cgroup_id,
-        execution_id: header.execution_id,
-        exit_code: event.exit_code,
-    })
+        let need = core::mem::size_of::<ExitEvent>();
+        if data.len() < need {
+            return Err(ParseError::BufferTooShort {
+                need,
+                got: data.len(),
+            });
+        }
+
+        // SAFETY: ExitEvent is repr(C), we verified the length, and use
+        // read_unaligned because ring buffer data may not be aligned.
+        let event = unsafe { core::ptr::read_unaligned(data.as_ptr().cast::<ExitEvent>()) };
+        let header = &event.header;
+
+        Ok(Self {
+            pid: header.pid,
+            ppid: header.ppid,
+            uid: header.uid,
+            gid: header.gid,
+            euid: header.euid,
+            comm: cstr_from_bytes(&header.comm),
+            tty_nr: header.tty_nr,
+            cgroup_id: header.cgroup_id,
+            execution_id: header.execution_id,
+            exit_code: event.exit_code,
+        })
+    }
 }
 
 /// A parsed I/O event with fields ready for logging or serialization.
@@ -139,40 +151,54 @@ pub struct ParsedIoEvent {
     pub count: u64,
 }
 
-/// Parse a raw I/O event from ring buffer bytes.
-///
-/// Returns `None` if the buffer is too short.
-pub fn parse_io_event(data: &[u8]) -> Option<ParsedIoEvent> {
-    let header = parse_header(data)?;
-    match header.decoded_event_type()? {
-        EventType::Read | EventType::Write => {}
-        EventType::Exec | EventType::Exit => return None,
+impl TryFrom<&[u8]> for ParsedIoEvent {
+    type Error = ParseError;
+
+    fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
+        let header = EventHeader::try_from(data)?;
+        let event_type = header
+            .decoded_event_type()
+            .ok_or(ParseError::InvalidEventType(header.event_type))?;
+        match event_type {
+            EventType::Read | EventType::Write => {}
+            EventType::Exec | EventType::Exit => {
+                return Err(ParseError::UnexpectedEventType {
+                    expected: "Read or Write",
+                    got: header.event_type,
+                });
+            }
+        }
+
+        let need = core::mem::size_of::<IoEvent>();
+        if data.len() < need {
+            return Err(ParseError::BufferTooShort {
+                need,
+                got: data.len(),
+            });
+        }
+
+        // SAFETY: IoEvent is repr(C), we verified the length, and use
+        // read_unaligned because ring buffer data may not be aligned.
+        let event = unsafe { core::ptr::read_unaligned(data.as_ptr().cast::<IoEvent>()) };
+        let header = &event.header;
+
+        let data_len = (event.data_len as usize).min(shspectr_common::MAX_DATA_LEN);
+
+        Ok(Self {
+            pid: header.pid,
+            ppid: header.ppid,
+            uid: header.uid,
+            gid: header.gid,
+            euid: header.euid,
+            comm: cstr_from_bytes(&header.comm),
+            tty_nr: header.tty_nr,
+            cgroup_id: header.cgroup_id,
+            execution_id: header.execution_id,
+            fd: event.fd,
+            data: event.data[..data_len].to_vec(),
+            count: event.count,
+        })
     }
-    if data.len() < core::mem::size_of::<IoEvent>() {
-        return None;
-    }
-
-    // SAFETY: IoEvent is repr(C), we verified the length, and use
-    // read_unaligned because ring buffer data may not be aligned.
-    let event = unsafe { core::ptr::read_unaligned(data.as_ptr().cast::<IoEvent>()) };
-    let header = &event.header;
-
-    let data_len = (event.data_len as usize).min(shspectr_common::MAX_DATA_LEN);
-
-    Some(ParsedIoEvent {
-        pid: header.pid,
-        ppid: header.ppid,
-        uid: header.uid,
-        gid: header.gid,
-        euid: header.euid,
-        comm: cstr_from_bytes(&header.comm),
-        tty_nr: header.tty_nr,
-        cgroup_id: header.cgroup_id,
-        execution_id: header.execution_id,
-        fd: event.fd,
-        data: event.data[..data_len].to_vec(),
-        count: event.count,
-    })
 }
 
 /// Extract a UTF-8 string from a null-terminated byte buffer.
@@ -256,7 +282,7 @@ mod tests {
     #[test]
     fn parse_exec_event_roundtrip() {
         let data = make_exec_event("/usr/bin/ls", &["ls", "-la", "/tmp"], 0);
-        let parsed = parse_exec_event(&data).expect("should parse");
+        let parsed = ParsedExecEvent::try_from(data.as_slice()).expect("should parse");
 
         assert_eq!(parsed.filename, "/usr/bin/ls");
         assert_eq!(parsed.argv, vec!["ls", "-la", "/tmp"]);
@@ -275,49 +301,49 @@ mod tests {
     #[test]
     fn parse_exec_event_failed_exec() {
         let data = make_exec_event("/usr/bin/nonexistent", &["nonexistent"], -2);
-        let parsed = parse_exec_event(&data).expect("should parse");
+        let parsed = ParsedExecEvent::try_from(data.as_slice()).expect("should parse");
         assert_eq!(parsed.retval, -2);
     }
 
     #[test]
     fn parse_exec_event_too_short() {
         let data = vec![0u8; 10];
-        assert!(parse_exec_event(&data).is_none());
+        assert!(ParsedExecEvent::try_from(data.as_slice()).is_err());
     }
 
     #[test]
     fn parse_header_too_short() {
         let data = vec![0u8; 10];
-        assert!(parse_header(&data).is_none());
+        assert!(EventHeader::try_from(data.as_slice()).is_err());
     }
 
     #[test]
     fn parse_header_rejects_unknown_event_type() {
         let mut data = make_exec_event("/bin/true", &["true"], 0);
         data[0..4].copy_from_slice(&99u32.to_ne_bytes());
-        assert!(parse_header(&data).is_none());
-        assert!(parse_exec_event(&data).is_none());
+        assert!(EventHeader::try_from(data.as_slice()).is_err());
+        assert!(ParsedExecEvent::try_from(data.as_slice()).is_err());
     }
 
     #[test]
     fn parse_header_rejects_unknown_wire_version() {
         let mut data = make_exec_event("/bin/true", &["true"], 0);
         data[4..8].copy_from_slice(&99u32.to_ne_bytes());
-        assert!(parse_header(&data).is_none());
-        assert!(parse_exec_event(&data).is_none());
+        assert!(EventHeader::try_from(data.as_slice()).is_err());
+        assert!(ParsedExecEvent::try_from(data.as_slice()).is_err());
     }
 
     #[test]
     fn parse_exec_event_rejects_mismatched_header_type() {
         let mut data = make_exec_event("/bin/true", &["true"], 0);
         data[0..4].copy_from_slice(&(EventType::Exit as u32).to_ne_bytes());
-        assert!(parse_exec_event(&data).is_none());
+        assert!(ParsedExecEvent::try_from(data.as_slice()).is_err());
     }
 
     #[test]
     fn parse_exec_event_no_args() {
         let data = make_exec_event("/bin/true", &[], 0);
-        let parsed = parse_exec_event(&data).expect("should parse");
+        let parsed = ParsedExecEvent::try_from(data.as_slice()).expect("should parse");
         assert!(parsed.argv.is_empty());
     }
 
@@ -349,7 +375,7 @@ mod tests {
     #[test]
     fn parse_exit_event_success() {
         let data = make_exit_event(0);
-        let parsed = parse_exit_event(&data).expect("should parse");
+        let parsed = ParsedExitEvent::try_from(data.as_slice()).expect("should parse");
 
         assert_eq!(parsed.pid, 200);
         assert_eq!(parsed.ppid, 1);
@@ -363,7 +389,7 @@ mod tests {
     #[test]
     fn parse_exit_event_nonzero_code() {
         let data = make_exit_event(1);
-        let parsed = parse_exit_event(&data).expect("should parse");
+        let parsed = ParsedExitEvent::try_from(data.as_slice()).expect("should parse");
         assert_eq!(parsed.exit_code, 1);
     }
 
@@ -371,14 +397,14 @@ mod tests {
     fn parse_exit_event_signal_death() {
         // Process killed by signal 9 → exit code 137 (128 + 9)
         let data = make_exit_event(137);
-        let parsed = parse_exit_event(&data).expect("should parse");
+        let parsed = ParsedExitEvent::try_from(data.as_slice()).expect("should parse");
         assert_eq!(parsed.exit_code, 137);
     }
 
     #[test]
     fn parse_exit_event_too_short() {
         let data = vec![0u8; 10];
-        assert!(parse_exit_event(&data).is_none());
+        assert!(ParsedExitEvent::try_from(data.as_slice()).is_err());
     }
 
     fn make_io_event(fd: u32, payload: &[u8], count: u64) -> Vec<u8> {
@@ -420,7 +446,7 @@ mod tests {
     #[test]
     fn parse_io_event_write_stdout() {
         let data = make_io_event(1, b"hello world\n", 12);
-        let parsed = parse_io_event(&data).expect("should parse");
+        let parsed = ParsedIoEvent::try_from(data.as_slice()).expect("should parse");
 
         assert_eq!(parsed.pid, 300);
         assert_eq!(parsed.fd, 1);
@@ -433,7 +459,7 @@ mod tests {
     #[test]
     fn parse_io_event_read_stdin() {
         let data = make_io_event(0, b"input\n", 6);
-        let parsed = parse_io_event(&data).expect("should parse");
+        let parsed = ParsedIoEvent::try_from(data.as_slice()).expect("should parse");
 
         assert_eq!(parsed.fd, 0);
         assert_eq!(parsed.data, b"input\n");
@@ -443,7 +469,7 @@ mod tests {
     #[test]
     fn parse_io_event_empty_data() {
         let data = make_io_event(2, b"", 0);
-        let parsed = parse_io_event(&data).expect("should parse");
+        let parsed = ParsedIoEvent::try_from(data.as_slice()).expect("should parse");
 
         assert_eq!(parsed.fd, 2);
         assert!(parsed.data.is_empty());
@@ -452,7 +478,7 @@ mod tests {
     #[test]
     fn parse_io_event_too_short() {
         let data = vec![0u8; 10];
-        assert!(parse_io_event(&data).is_none());
+        assert!(ParsedIoEvent::try_from(data.as_slice()).is_err());
     }
 
     #[test]
@@ -487,7 +513,7 @@ mod tests {
         }
         .to_vec();
 
-        let parsed = parse_io_event(&bytes).expect("should parse");
+        let parsed = ParsedIoEvent::try_from(bytes.as_slice()).expect("should parse");
         assert_eq!(
             parsed.data.len(),
             shspectr_common::MAX_DATA_LEN,
