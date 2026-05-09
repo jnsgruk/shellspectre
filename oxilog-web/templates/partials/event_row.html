@@ -1,0 +1,21 @@
+<tr id="ev-{{ event.id }}" class="border-b border-gray-800 hover:bg-gray-900/50 cursor-pointer">
+    <td class="px-3 py-2 text-sm font-mono text-gray-300 whitespace-nowrap">
+        <button
+            class="mr-1 text-gray-500 hover:text-gray-300 focus:outline-none"
+            data-on-click="@get('/api/v1/events/{{ event.id }}/detail')"
+            aria-label="Toggle detail for event {{ event.id }}"
+        >▶</button>
+        {{ event.timestamp }}
+    </td>
+    <td class="px-3 py-2 text-sm text-gray-400">{{ event.user }}</td>
+    <td class="px-3 py-2 text-sm font-mono text-gray-200" title="{{ event.command_full }}">
+        {{ event.command_display }}
+    </td>
+    <td class="px-3 py-2 text-sm font-mono {{ event.exit_code_class }}">{{ event.exit_code }}</td>
+    <td class="px-3 py-2 text-sm font-mono text-gray-500" title="{{ event.session_id }}">
+        {{ event.session_id_short }}
+    </td>
+</tr>
+<tr id="detail-{{ event.id }}" class="hidden">
+    <td colspan="5"></td>
+</tr>

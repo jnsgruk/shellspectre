@@ -1,12 +1,20 @@
 //! oxilog-web: read-only web UI for browsing captured session events.
 
 pub mod application;
+pub mod domain;
+pub mod infrastructure;
+pub mod presentation;
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use tokio::net::TcpListener;
 use tracing::info;
+
+use application::state::AppState;
+use infrastructure::database::create_pool;
+use infrastructure::repositories::event::SqlEventRepository;
 
 /// Configuration for the web server.
 #[derive(Debug, Clone)]
@@ -23,7 +31,11 @@ pub struct ServerConfig {
 ///
 /// Returns an error if the server fails to bind or start.
 pub async fn start_server(config: ServerConfig) -> Result<()> {
-    let app = application::routes::router();
+    let pool = create_pool(&config.db_path)?;
+    let repo = Arc::new(SqlEventRepository::new(pool));
+    let state = AppState { repo };
+
+    let app = application::routes::router().with_state(state);
 
     let listener = TcpListener::bind(config.bind)
         .await

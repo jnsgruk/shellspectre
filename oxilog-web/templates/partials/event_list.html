@@ -1,0 +1,37 @@
+<div id="event-list-container">
+    <table class="w-full text-left">
+        <thead>
+            <tr class="border-b border-gray-700 text-gray-400 text-xs uppercase tracking-wider">
+                <th class="px-3 py-3 cursor-pointer hover:text-gray-200"
+                    data-on-click="@get('{{ nav.sort_url_timestamp() }}')">
+                    Timestamp{{ nav.sort_indicator_timestamp() }}
+                </th>
+                <th class="px-3 py-3">User</th>
+                <th class="px-3 py-3 cursor-pointer hover:text-gray-200"
+                    data-on-click="@get('{{ nav.sort_url_comm() }}')">
+                    Command{{ nav.sort_indicator_comm() }}
+                </th>
+                <th class="px-3 py-3 cursor-pointer hover:text-gray-200"
+                    data-on-click="@get('{{ nav.sort_url_exit_code() }}')">
+                    Exit{{ nav.sort_indicator_exit_code() }}
+                </th>
+                <th class="px-3 py-3">Session</th>
+            </tr>
+        </thead>
+        <tbody id="event-rows">
+            {% if paginated.items.is_empty() %}
+            <tr>
+                <td colspan="5" class="px-3 py-12 text-center text-gray-500">
+                    No events found.
+                </td>
+            </tr>
+            {% else %}
+            {% for event in &paginated.items %}
+            {% include "partials/event_row.html" %}
+            {% endfor %}
+            {% endif %}
+        </tbody>
+    </table>
+
+    {% include "partials/pagination.html" %}
+</div>

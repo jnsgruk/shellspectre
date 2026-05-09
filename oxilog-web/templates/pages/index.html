@@ -3,12 +3,25 @@
 {% block title %}oxilog — events{% endblock %}
 
 {% block content %}
-<div id="app" data-signals='{}'>
-    <div class="mb-8">
-        <p class="text-gray-400">Event viewer will appear here.</p>
-        <p class="text-gray-500 text-sm mt-2">
-            Stage 1 scaffold — filter bar, event table, and pagination coming in Stage 3.
-        </p>
+<div id="app" data-signals='{"_query": "{{ initial_query }}"}'>
+    <!-- Filter Bar -->
+    <div class="mb-6">
+        <div class="flex gap-2">
+            <input
+                type="text"
+                data-model="_query"
+                placeholder="Filter: user:root comm:bash exit:0 ..."
+                class="flex-1 px-4 py-2 rounded bg-gray-900 border border-gray-700 text-gray-200 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono text-sm"
+                data-on-keydown="evt.key === 'Enter' && @get('/api/v1/events?q=' + _query)"
+            />
+            <button
+                class="px-4 py-2 rounded bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium"
+                data-on-click="@get('/api/v1/events?q=' + _query)"
+            >Apply</button>
+        </div>
     </div>
+
+    <!-- Event List (initial render, replaced by Datastar on interaction) -->
+    {% include "partials/event_list.html" %}
 </div>
 {% endblock %}

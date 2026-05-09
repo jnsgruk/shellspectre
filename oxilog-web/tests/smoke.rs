@@ -2,8 +2,13 @@
 //! Smoke tests for the oxilog-web server.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use tokio::time::{Duration, sleep};
+
+use oxilog_web::application::state::AppState;
+use oxilog_web::infrastructure::database::create_test_pool;
+use oxilog_web::infrastructure::repositories::event::SqlEventRepository;
 
 #[tokio::test]
 async fn server_serves_index_page() {
@@ -53,12 +58,16 @@ async fn server_returns_404_for_unknown_routes() {
 
 /// Spin up a test server on a random port and return its address.
 async fn start_test_server() -> SocketAddr {
+    let pool = create_test_pool().expect("create test pool");
+    let repo = Arc::new(SqlEventRepository::new(pool));
+    let state = AppState { repo };
+
+    let app = oxilog_web::application::routes::router().with_state(state);
+
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("failed to bind");
     let addr = listener.local_addr().expect("failed to get local addr");
-
-    let app = oxilog_web::application::routes::router();
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.ok();
