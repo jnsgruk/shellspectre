@@ -69,7 +69,12 @@ description = "Run web crate tests"
 run = "cargo test -p oxilog-web"
 
 [tasks.run-web]
-description = "Run the web UI server"
+description = "Run the web UI server via the main oxilog binary"
+depends = ["build"]
+run = "cargo run -p oxilog -- web"
+
+[tasks.run-web-dev]
+description = "Run the web UI server standalone (no eBPF build needed)"
 depends = ["build-web"]
 run = "cargo run -p oxilog-web --"
 

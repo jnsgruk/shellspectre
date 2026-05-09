@@ -2,6 +2,8 @@
 
 use crate::domain::event::{EventDetail, EventSummary};
 
+use super::username::resolve_uid;
+
 /// Formatted event summary for display in the event table.
 ///
 /// All fields are pre-formatted strings ready for template rendering.
@@ -67,7 +69,7 @@ impl EventSummaryView {
             timestamp,
             session_id_short,
             session_id: s.session_id.clone(),
-            user: s.uid.to_string(),
+            user: resolve_uid(s.uid),
             comm,
             command_display,
             command_full,
@@ -165,8 +167,8 @@ impl EventDetailView {
             session_id: d.summary.session_id.clone(),
             pid: d.summary.pid.to_string(),
             ppid: d.summary.ppid.to_string(),
-            uid: d.summary.uid.to_string(),
-            euid: d.summary.euid.to_string(),
+            uid: format!("{} ({})", resolve_uid(d.summary.uid), d.summary.uid),
+            euid: format!("{} ({})", resolve_uid(d.summary.euid), d.summary.euid),
             gid: d.gid.to_string(),
             tty,
             full_command,

@@ -8,6 +8,7 @@ workspace = true
 
 [dependencies]
 oxilog-common = { path = "../oxilog-common", features = ["std"] }
+oxilog-web = { path = "../oxilog-web" }
 anyhow = "1"
 aya = "0.13.1"
 aya-log = "0.2.1"

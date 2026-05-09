@@ -51,9 +51,25 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::expect_used)]
 async fn shutdown_signal() {
     let ctrl_c = tokio::signal::ctrl_c();
-    tokio::pin!(ctrl_c);
-    ctrl_c.await.ok();
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = async { ctrl_c.await.ok(); } => {},
+        () = terminate => {},
+    }
+
     info!("shutdown signal received");
 }

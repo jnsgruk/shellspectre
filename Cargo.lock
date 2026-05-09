@@ -1048,6 +1048,7 @@ dependencies = [
  "include_bytes_aligned",
  "libc",
  "oxilog-common",
+ "oxilog-web",
  "rusqlite",
  "serde_json",
  "tokio",

@@ -39,6 +39,18 @@ enum Command {
     },
     /// Check kernel and BPF capability status
     Check,
+    /// Start the web UI server
+    Web {
+        /// Port to listen on
+        #[arg(long, default_value = "3000")]
+        port: u16,
+        /// Address to bind to
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+        /// Path to the SQLite database
+        #[arg(long, default_value = "oxilog.db")]
+        db_path: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -70,6 +82,19 @@ fn main() -> Result<()> {
             run(filter_config, sink)?;
         }
         Command::Check => check_capabilities()?,
+        Command::Web {
+            port,
+            bind,
+            db_path,
+        } => {
+            let addr: std::net::SocketAddr = format!("{bind}:{port}").parse()?;
+            let config = oxilog_web::ServerConfig {
+                bind: addr,
+                db_path,
+            };
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(oxilog_web::start_server(config))?;
+        }
     }
 
     Ok(())
