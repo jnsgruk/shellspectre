@@ -1,0 +1,66 @@
+[tools]
+rust = "latest"
+prek = "latest"
+
+[tasks.build-ebpf]
+description = "Build the eBPF crate (requires nightly)"
+run = "cargo +nightly build --manifest-path oxilog-ebpf/Cargo.toml -Z build-std=core --target bpfel-unknown-none --release"
+
+[tasks.build]
+description = "Build everything (eBPF + userspace)"
+depends = ["build-ebpf"]
+run = "cargo build"
+
+[tasks.test]
+description = "Run userspace tests"
+run = "cargo test -p oxilog -p oxilog-common"
+
+[tasks.test-system]
+description = "Run system integration tests (requires LXD)"
+run = "cargo test -p oxilog-system-tests -- --test-threads=1"
+
+[tasks.fmt]
+description = "Format all Rust code"
+run = [
+  "cargo fmt --all",
+  "cargo +nightly fmt --manifest-path oxilog-ebpf/Cargo.toml",
+]
+
+[tasks.fmt-check]
+description = "Check formatting without modifying files"
+run = [
+  "cargo fmt --all -- --check",
+  "cargo +nightly fmt --manifest-path oxilog-ebpf/Cargo.toml -- --check",
+]
+
+[tasks.clippy]
+description = "Lint all Rust code"
+run = [
+  "cargo clippy --workspace -- -D warnings",
+  "cargo +nightly clippy --manifest-path oxilog-ebpf/Cargo.toml -Z build-std=core --target bpfel-unknown-none -- -D warnings",
+]
+
+[tasks.check-file-length]
+description = "Enforce max 500 lines per .rs file"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+max=500
+failed=0
+while IFS= read -r f; do
+  lines=$(wc -l < "$f")
+  if [ "$lines" -gt "$max" ]; then
+    echo "ERROR: $f has $lines lines (max $max)"
+    failed=1
+  fi
+done < <(find oxilog oxilog-common oxilog-ebpf tests/system -name '*.rs' 2>/dev/null)
+if [ "$failed" -eq 1 ]; then
+  exit 1
+fi
+echo "All files within $max line limit"
+"""
+
+[tasks.run]
+description = "Build and run oxilog"
+depends = ["build"]
+run = "cargo run -p oxilog --"

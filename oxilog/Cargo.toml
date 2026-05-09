@@ -1,0 +1,17 @@
+[package]
+name = "oxilog"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+
+[dependencies]
+oxilog-common = { path = "../oxilog-common", features = ["std"] }
+anyhow = "1"
+aya = "0.13.1"
+aya-log = "0.2.1"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+libc = "0.2"

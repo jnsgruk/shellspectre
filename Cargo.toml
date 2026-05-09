@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = ["oxilog", "oxilog-common", "tests/system"]
+exclude = ["oxilog-ebpf"]
+
+[workspace.lints.clippy]
+# Enable pedantic + cargo groups
+pedantic = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+# Cargo: allow noisy lints
+cargo_common_metadata = "allow"
+multiple_crate_versions = "allow"
+
+# Pedantic: allow noisy lints
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+doc_markdown = "allow"
+
+# Restriction: cherry-picked high-value lints
+undocumented_unsafe_blocks = "warn"
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+wildcard_enum_match_arm = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+missing_assert_message = "warn"
+
+# Nursery: cherry-picked stable lints
+cognitive_complexity = "warn"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"

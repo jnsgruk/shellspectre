@@ -1,0 +1,31 @@
+# Function body limit (75 lines as requested, default is 100)
+too-many-lines-threshold = 75
+
+# Cognitive complexity (stricter than default 25)
+cognitive-complexity-threshold = 20
+
+# Function params
+too-many-arguments-threshold = 6
+
+# Pass-by-value size (bytes) — stricter for repr(C) event structs
+pass-by-value-size-limit = 128
+
+# Error variant size
+large-error-threshold = 128
+
+# Async future size — catch large state machines
+future-size-threshold = 8192
+
+# Stack arrays
+array-size-threshold = 8192
+
+# Allow unwrap/expect/dbg in tests
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-dbg-in-tests = true
+
+# Technical terms that doc_markdown should not flag (if re-enabled)
+doc-valid-idents = ["eBPF", "BPF", "BTF", "PTY", "TTY", "cgroup", "execve", "pid", "ppid", "uid", "gid", "tty", "OTel", "stdin", "stdout", "stderr"]
+
+# Not a public library — enable stricter lints
+avoid-breaking-exported-api = false
