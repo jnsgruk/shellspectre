@@ -1,35 +1,10 @@
 #![allow(clippy::expect_used)]
 //! Integration tests for the event detail endpoint.
 
-use std::net::SocketAddr;
-use std::sync::Arc;
+mod support;
 
+use oxilog_web::infrastructure::database::DbPool;
 use rusqlite::params;
-use tokio::time::{Duration, sleep};
-
-use oxilog_web::application::state::AppState;
-use oxilog_web::infrastructure::database::{DbPool, create_test_pool};
-use oxilog_web::infrastructure::repositories::event::SqlEventRepository;
-
-async fn start_test_server() -> (SocketAddr, DbPool) {
-    let pool = create_test_pool().expect("create test pool");
-    let repo = Arc::new(SqlEventRepository::new(pool.clone()));
-    let state = AppState { repo };
-
-    let app = oxilog_web::application::routes::router().with_state(state);
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
-    let addr = listener.local_addr().expect("addr");
-
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.ok();
-    });
-
-    sleep(Duration::from_millis(50)).await;
-    (addr, pool)
-}
 
 fn seed_event_with_io(pool: &DbPool) -> i64 {
     let conn = pool.get().expect("get conn");
@@ -71,7 +46,7 @@ fn seed_event_with_io(pool: &DbPool) -> i64 {
 
 #[tokio::test]
 async fn detail_returns_html_fragment() {
-    let (addr, pool) = start_test_server().await;
+    let (addr, pool) = support::start_test_server().await;
     let id = seed_event_with_io(&pool);
 
     let client = reqwest::Client::new();
@@ -85,7 +60,10 @@ async fn detail_returns_html_fragment() {
     assert_eq!(resp.status(), 200);
 
     let body = resp.text().await.expect("body");
-    assert!(body.contains(&format!("detail-{id}")), "should contain detail element ID");
+    assert!(
+        body.contains(&format!("detail-{id}")),
+        "should contain detail element ID"
+    );
     assert!(body.contains("pts/3"), "should show TTY");
     assert!(body.contains("4821"), "should show PID");
     assert!(body.contains("4800"), "should show PPID");
@@ -95,7 +73,7 @@ async fn detail_returns_html_fragment() {
 
 #[tokio::test]
 async fn detail_not_found_returns_404() {
-    let (addr, _pool) = start_test_server().await;
+    let (addr, _pool) = support::start_test_server().await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -112,7 +90,7 @@ async fn detail_not_found_returns_404() {
 
 #[tokio::test]
 async fn detail_metadata_fields_present() {
-    let (addr, pool) = start_test_server().await;
+    let (addr, pool) = support::start_test_server().await;
     let id = seed_event_with_io(&pool);
 
     let body = reqwest::get(format!("http://{addr}/api/v1/events/{id}/detail"))
@@ -123,14 +101,16 @@ async fn detail_metadata_fields_present() {
         .expect("body");
 
     // Check all metadata grid labels are present.
-    for label in &["Session:", "PID:", "PPID:", "UID:", "EUID:", "GID:", "TTY:", "Exit:"] {
+    for label in &[
+        "Session:", "PID:", "PPID:", "UID:", "EUID:", "GID:", "TTY:", "Exit:",
+    ] {
         assert!(body.contains(label), "should contain '{label}'");
     }
 }
 
 #[tokio::test]
 async fn detail_no_io_shows_message() {
-    let (addr, pool) = start_test_server().await;
+    let (addr, pool) = support::start_test_server().await;
 
     let conn = pool.get().expect("get conn");
     conn.execute(
@@ -158,5 +138,8 @@ async fn detail_no_io_shows_message() {
         .await
         .expect("body");
 
-    assert!(body.contains("No I/O data captured"), "should show no-IO message");
+    assert!(
+        body.contains("No I/O data captured"),
+        "should show no-IO message"
+    );
 }

@@ -1,16 +1,21 @@
 //! API route handlers.
 
+use std::convert::Infallible;
+use std::time::Duration;
+
 use askama::Template;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::{Router, routing::get};
 use serde::Deserialize;
+use futures::StreamExt;
 
 use crate::application::state::AppState;
 use crate::domain::event::EventFilter;
 use crate::domain::listing::{EventSortKey, ListRequest, SortDirection};
-use crate::presentation::web::event::EventDetailView;
+use crate::presentation::web::event::{EventDetailView, EventSummaryView};
 use crate::presentation::web::listing::{ListNavigator, Paginated};
 
 use super::support::is_datastar_request;
@@ -113,7 +118,114 @@ async fn list_events(
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/events", get(list_events))
+        .route("/api/v1/events/live", get(live_events))
         .route("/api/v1/events/{id}/detail", get(get_event_detail))
+}
+
+/// Query parameters for the live events endpoint.
+#[derive(Debug, Deserialize)]
+pub struct LiveEventsParams {
+    /// Filter query string.
+    #[serde(default)]
+    pub q: String,
+}
+
+/// Askama template for a single event row (reuses the existing partial).
+#[derive(Template)]
+#[template(path = "partials/event_row.html")]
+struct EventRowFragment {
+    event: EventSummaryView,
+}
+
+/// `GET /api/v1/events/live?q=...`
+///
+/// SSE stream that polls the database every 500ms for new events.
+/// Sends `datastar-patch-elements` events containing `<tr>` HTML fragments.
+///
+/// Supports `Last-Event-ID` header for reconnection without duplicates.
+async fn live_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<LiveEventsParams>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
+    let filter = EventFilter::parse(&params.q);
+
+    // Resume from Last-Event-ID if provided (reconnection support).
+    let initial_id: i64 = headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    // If no Last-Event-ID, start from the current max id to avoid
+    // dumping the entire history on first connect.
+    let mut last_seen_id = if initial_id > 0 {
+        initial_id
+    } else {
+        state.repo.max_event_id().unwrap_or(0)
+    };
+
+    let poll_interval = Duration::from_millis(500);
+    let ticker = tokio::time::interval(poll_interval);
+    let stream = tokio_stream::wrappers::IntervalStream::new(ticker);
+
+    let mut live_count: u64 = 0;
+
+    let event_stream = stream.flat_map(move |_| {
+        let new_events = match state.repo.list_since(last_seen_id, &filter) {
+            Ok(events) => events,
+            Err(err) => {
+                tracing::warn!(%err, last_seen_id, "failed to poll for new events");
+                Vec::new()
+            }
+        };
+
+        if new_events.is_empty() {
+            return tokio_stream::iter(vec![Ok(Event::default().comment("keepalive"))]);
+        }
+
+        // Update high-water mark.
+        if let Some(last) = new_events.last() {
+            last_seen_id = last.id;
+        }
+
+        live_count += new_events.len() as u64;
+
+        // Render each new event as an HTML table row.
+        let mut fragments = String::new();
+        for summary in &new_events {
+            let view = EventSummaryView::from_summary(summary);
+            let template = EventRowFragment { event: view };
+            if let Ok(html) = template.render() {
+                fragments.push_str(&html);
+            }
+        }
+
+        // Datastar v1 SSE patch-elements event format.
+        // Each line of the HTML fragment must be prefixed with "elements ".
+        // The axum SSE `Event::data()` method adds the `data: ` prefix per
+        // line, so we only need to prepend "elements " to every HTML line.
+        let elements_data: String = fragments
+            .lines()
+            .map(|line| format!("elements {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let merge_data = format!("{elements_data}\nselector #event-rows\nmode prepend");
+        let merge_evt = Event::default()
+            .event("datastar-patch-elements")
+            .data(merge_data)
+            .id(last_seen_id.to_string());
+
+        // Update the live count signal.
+        let signal_data = format!("signals {{_liveCount: {live_count}}}");
+        let signal_evt = Event::default()
+            .event("datastar-patch-signals")
+            .data(signal_data);
+
+        tokio_stream::iter(vec![Ok(merge_evt), Ok(signal_evt)])
+    });
+
+    Sse::new(event_stream).keep_alive(KeepAlive::default())
 }
 
 /// Askama template for the event detail fragment.

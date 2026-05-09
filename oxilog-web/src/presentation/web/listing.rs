@@ -44,7 +44,7 @@ impl Paginated {
 
 /// Generates URL query strings for pagination and sorting navigation.
 ///
-/// Used in templates to build `data-on-click` URLs.
+/// Used in templates to build `data-on:click` URLs.
 #[derive(Debug)]
 pub struct ListNavigator {
     /// Current filter query string (raw `q` param value), or empty.

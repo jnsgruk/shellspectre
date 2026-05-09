@@ -10,20 +10,24 @@ use rusqlite::OpenFlags;
 /// Type alias for the connection pool.
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-/// Create a read-only connection pool to an existing SQLite database.
+/// Create a read-only connection pool to a SQLite database.
 ///
-/// The database must already exist and have the oxilog schema.
-/// This function does NOT create tables.
+/// If the database file does not exist, it is created with the oxilog
+/// schema (empty tables). The pool is always opened read-only after
+/// initialisation.
 ///
 /// # Errors
 ///
-/// Returns an error if the database file doesn't exist or the pool
-/// cannot be created.
+/// Returns an error if the database cannot be created or the pool
+/// cannot be opened.
 pub fn create_pool(db_path: &str) -> Result<DbPool> {
-    anyhow::ensure!(
-        Path::new(db_path).exists(),
-        "database file not found: {db_path}"
-    );
+    if !Path::new(db_path).exists() {
+        tracing::info!(path = db_path, "database not found, creating empty database");
+        let conn =
+            rusqlite::Connection::open(db_path).context("failed to create database file")?;
+        conn.execute_batch(SCHEMA)
+            .context("failed to initialize database schema")?;
+    }
 
     let manager = SqliteConnectionManager::file(db_path)
         .with_flags(OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX);
@@ -61,18 +65,19 @@ pub fn create_test_pool() -> Result<DbPool> {
 
     {
         let conn = pool.get().context("failed to get test connection")?;
-        conn.execute_batch(TEST_SCHEMA)
+        conn.execute_batch(SCHEMA)
             .context("failed to create test schema")?;
     }
 
     Ok(pool)
 }
 
-/// Schema for tests — duplicated from `oxilog/src/sqlite_sink.rs`.
+/// Oxilog database schema — duplicated from `oxilog/src/sqlite_sink.rs`.
+///
 /// We duplicate rather than depend on the oxilog crate because the web
-/// crate must not depend on the eBPF-loading binary crate.
-#[doc(hidden)]
-pub const TEST_SCHEMA: &str = r"
+/// crate must not depend on the eBPF-loading binary crate. Used both for
+/// auto-creating empty databases and for in-memory test databases.
+pub const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS sessions (
     id          TEXT PRIMARY KEY,
     started_at  TEXT NOT NULL,

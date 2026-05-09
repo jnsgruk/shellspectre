@@ -1,4 +1,4 @@
-<div id="pagination" class="flex items-center justify-between mt-4 text-sm text-gray-400">
+<div id="pagination" data-show="!$_live" class="flex items-center justify-between mt-4 text-sm text-gray-400">
     <div>
         Showing {{ paginated.items.len() }} of {{ paginated.total_items }} events
     </div>
@@ -6,7 +6,7 @@
         {% if paginated.has_prev %}
         <button
             class="px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300"
-            data-on-click="@get('{{ nav.page_url(paginated.page - 1) }}')"
+            data-on:click="@get('{{ nav.page_url(paginated.page - 1) }}')"
         >◀ Prev</button>
         {% else %}
         <span class="px-3 py-1 rounded bg-gray-800/50 text-gray-600 cursor-not-allowed">◀ Prev</span>
@@ -17,7 +17,7 @@
         {% if paginated.has_next %}
         <button
             class="px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300"
-            data-on-click="@get('{{ nav.page_url(paginated.page + 1) }}')"
+            data-on:click="@get('{{ nav.page_url(paginated.page + 1) }}')"
         >Next ▶</button>
         {% else %}
         <span class="px-3 py-1 rounded bg-gray-800/50 text-gray-600 cursor-not-allowed">Next ▶</span>

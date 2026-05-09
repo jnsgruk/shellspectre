@@ -242,6 +242,54 @@ impl EventRepository for SqlEventRepository {
 
         Ok(Some(detail))
     }
+
+    fn list_since(&self, after_id: i64, filter: &EventFilter) -> Result<Vec<EventSummary>> {
+        let conn = self.pool.get().context("failed to get DB connection")?;
+
+        let (where_clause, mut param_values) = build_where_clause(filter);
+
+        // Add the `id > after_id` condition.
+        let id_condition = format!("id > ?{}", param_values.len() + 1);
+        param_values.push(Box::new(after_id));
+
+        // Combine: the existing where_clause already starts with "WHERE ..."
+        // so we append with AND.
+        let full_where = if where_clause.is_empty() {
+            format!("WHERE {id_condition}")
+        } else {
+            format!("{where_clause} AND {id_condition}")
+        };
+
+        let sql = format!(
+            "SELECT id, timestamp, session_id, event_type, pid, ppid, uid, euid, \
+                    comm, filename, argv, exit_code \
+             FROM events {full_where} \
+             ORDER BY id ASC \
+             LIMIT 100"
+        );
+
+        let mut stmt = conn.prepare(&sql).context("failed to prepare list_since query")?;
+        let items = stmt
+            .query_map(
+                rusqlite::params_from_iter(param_values.iter().map(AsRef::as_ref)),
+                row_to_summary,
+            )
+            .context("failed to query events since")?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("failed to map event rows")?;
+
+        Ok(items)
+    }
+
+    fn max_event_id(&self) -> Result<i64> {
+        let conn = self.pool.get().context("failed to get DB connection")?;
+        let max_id: i64 = conn
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM events", [], |row| {
+                row.get(0)
+            })
+            .context("failed to query max event id")?;
+        Ok(max_id)
+    }
 }
 
 #[cfg(test)]
@@ -555,6 +603,90 @@ mod tests {
             2,
             "should have 2 stdout/stderr chunks"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn list_since_returns_new_events() -> Result<()> {
+        let pool = create_test_pool()?;
+        let repo = SqlEventRepository::new(pool.clone());
+
+        let conn = pool.get()?;
+        insert_test_session(&conn, "s1");
+        insert_test_exec(&conn, "s1", 100, "ls", "/ls", "[]", Some(0));
+        insert_test_exec(&conn, "s1", 101, "cat", "/cat", "[]", Some(0));
+        insert_test_exec(&conn, "s1", 102, "pwd", "/pwd", "[]", Some(0));
+        drop(conn);
+
+        // Get all events to find the first ID.
+        let all = repo.list(&ListRequest::default(), &EventFilter::default())?;
+        assert_eq!(all.items.len(), 3);
+
+        // list_since(id of first event) should return the next two.
+        // Events are returned DESC by list(), so last item is oldest.
+        let first_id = all.items.last().expect("has items").id;
+        let since = repo.list_since(first_id, &EventFilter::default())?;
+        assert_eq!(since.len(), 2, "should return 2 events after first_id");
+        assert!(since[0].id > first_id);
+        assert!(since[1].id > since[0].id, "should be ordered ASC");
+        Ok(())
+    }
+
+    #[test]
+    fn list_since_respects_filter() -> Result<()> {
+        let pool = create_test_pool()?;
+        let repo = SqlEventRepository::new(pool.clone());
+
+        let conn = pool.get()?;
+        insert_test_session(&conn, "s1");
+        insert_test_exec(&conn, "s1", 100, "ls", "/ls", "[]", Some(0));
+        insert_test_exec(&conn, "s1", 101, "bash", "/bash", "[]", Some(0));
+        drop(conn);
+
+        let filter = EventFilter::parse("comm:bash");
+        let since = repo.list_since(0, &filter)?;
+        assert_eq!(since.len(), 1);
+        assert_eq!(since[0].comm.as_deref(), Some("bash"));
+        Ok(())
+    }
+
+    #[test]
+    fn list_since_empty_when_no_new() -> Result<()> {
+        let pool = create_test_pool()?;
+        let repo = SqlEventRepository::new(pool.clone());
+
+        let conn = pool.get()?;
+        insert_test_session(&conn, "s1");
+        insert_test_exec(&conn, "s1", 100, "ls", "/ls", "[]", Some(0));
+        drop(conn);
+
+        let max = repo.max_event_id()?;
+        let since = repo.list_since(max, &EventFilter::default())?;
+        assert!(since.is_empty(), "no new events after max_id");
+        Ok(())
+    }
+
+    #[test]
+    fn max_event_id_empty_db() -> Result<()> {
+        let pool = create_test_pool()?;
+        let repo = SqlEventRepository::new(pool);
+        assert_eq!(repo.max_event_id()?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn max_event_id_with_data() -> Result<()> {
+        let pool = create_test_pool()?;
+        let repo = SqlEventRepository::new(pool.clone());
+
+        let conn = pool.get()?;
+        insert_test_session(&conn, "s1");
+        insert_test_exec(&conn, "s1", 100, "ls", "/ls", "[]", Some(0));
+        insert_test_exec(&conn, "s1", 101, "cat", "/cat", "[]", Some(0));
+        drop(conn);
+
+        let max = repo.max_event_id()?;
+        assert!(max > 0);
         Ok(())
     }
 }

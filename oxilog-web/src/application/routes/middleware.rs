@@ -9,7 +9,7 @@ const CSP_VALUE: HeaderValue = HeaderValue::from_static(
     "default-src 'self'; \
      script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.jsdelivr.net; \
      style-src 'self' 'unsafe-inline'; \
-     connect-src 'self'; \
+     connect-src 'self' https://cdn.jsdelivr.net; \
      img-src 'self'; \
      font-src 'self'",
 );
@@ -20,7 +20,7 @@ const CSP_VALUE: HeaderValue = HeaderValue::from_static(
 /// - `unsafe-eval` and `unsafe-inline` for Datastar v1 (it evaluates JS expressions
 ///   in `data-on-*` attributes).
 /// - CDN source for the Datastar script tag.
-/// - `connect-src 'self'` for SSE and Datastar fragment requests.
+/// - `connect-src 'self' https://cdn.jsdelivr.net` for SSE, Datastar requests, and source maps.
 pub async fn security_headers(req: Request<axum::body::Body>, next: Next) -> Response {
     let mut response = next.run(req).await;
     let headers = response.headers_mut();

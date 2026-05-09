@@ -1,35 +1,9 @@
 #![allow(clippy::expect_used)]
 //! Integration tests for the event list API and page routes.
 
-use std::net::SocketAddr;
-use std::sync::Arc;
+mod support;
 
-use tokio::time::{Duration, sleep};
-
-use oxilog_web::application::state::AppState;
-use oxilog_web::infrastructure::database::{DbPool, create_test_pool};
-use oxilog_web::infrastructure::repositories::event::SqlEventRepository;
-
-/// Spin up a test server with an in-memory DB and return (addr, pool).
-async fn start_test_server() -> (SocketAddr, DbPool) {
-    let pool = create_test_pool().expect("create test pool");
-    let repo = Arc::new(SqlEventRepository::new(pool.clone()));
-    let state = AppState { repo };
-
-    let app = oxilog_web::application::routes::router().with_state(state);
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
-    let addr = listener.local_addr().expect("addr");
-
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.ok();
-    });
-
-    sleep(Duration::from_millis(50)).await;
-    (addr, pool)
-}
+use oxilog_web::infrastructure::database::DbPool;
 
 fn seed_events(pool: &DbPool, count: u32) {
     let conn = pool.get().expect("get conn");
@@ -53,7 +27,7 @@ fn seed_events(pool: &DbPool, count: u32) {
 
 #[tokio::test]
 async fn index_page_contains_event_table() {
-    let (addr, pool) = start_test_server().await;
+    let (addr, pool) = support::start_test_server().await;
     seed_events(&pool, 3);
 
     let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
@@ -68,7 +42,7 @@ async fn index_page_contains_event_table() {
 
 #[tokio::test]
 async fn index_page_empty_state() {
-    let (addr, _pool) = start_test_server().await;
+    let (addr, _pool) = support::start_test_server().await;
 
     let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
     let body = resp.text().await.unwrap();
@@ -77,7 +51,7 @@ async fn index_page_empty_state() {
 
 #[tokio::test]
 async fn api_events_returns_json_without_datastar_header() {
-    let (addr, pool) = start_test_server().await;
+    let (addr, pool) = support::start_test_server().await;
     seed_events(&pool, 2);
 
     let resp = reqwest::get(format!("http://{addr}/api/v1/events"))
@@ -100,7 +74,7 @@ async fn api_events_returns_json_without_datastar_header() {
 
 #[tokio::test]
 async fn api_events_returns_html_with_datastar_header() {
-    let (addr, pool) = start_test_server().await;
+    let (addr, pool) = support::start_test_server().await;
     seed_events(&pool, 2);
 
     let client = reqwest::Client::new();
@@ -130,7 +104,7 @@ async fn api_events_returns_html_with_datastar_header() {
 
 #[tokio::test]
 async fn api_events_pagination() {
-    let (addr, pool) = start_test_server().await;
+    let (addr, pool) = support::start_test_server().await;
     seed_events(&pool, 10);
 
     let resp: serde_json::Value =
@@ -149,7 +123,7 @@ async fn api_events_pagination() {
 
 #[tokio::test]
 async fn api_events_filter() {
-    let (addr, pool) = start_test_server().await;
+    let (addr, pool) = support::start_test_server().await;
     seed_events(&pool, 5);
 
     let resp: serde_json::Value =
@@ -166,7 +140,7 @@ async fn api_events_filter() {
 
 #[tokio::test]
 async fn api_events_page_size_clamped() {
-    let (addr, pool) = start_test_server().await;
+    let (addr, pool) = support::start_test_server().await;
     seed_events(&pool, 2);
 
     // page_size=999 should be clamped to 100.
