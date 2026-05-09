@@ -1,0 +1,67 @@
+project: shspectr
+
+kill-timeout: 15m
+warn-timeout: 5m
+
+environment:
+  DB_PATH: /tmp/shspectr-test.db
+
+backends:
+  lxd:
+    type: adhoc
+    allocate: |
+      VM_NAME="shspectr-test-${SPREAD_SYSTEM/./-}-${RANDOM}"
+
+      lxc launch \
+        "${SPREAD_SYSTEM/-/:}" \
+        "${VM_NAME}" \
+        --vm \
+        -c user.user-data="$(sed "s|SPREAD_PASSWORD|$SPREAD_PASSWORD|g" tests/lib/cloud-config.yaml)"
+
+      # Wait for the spread user to be created by cloud-init
+      while ! lxc exec "${VM_NAME}" -- id -u spread &>/dev/null; do sleep 0.5; done
+
+      # Set the instance address for spread
+      ADDRESS "$(lxc ls -f csv | grep "${VM_NAME}" | cut -d"," -f3 | cut -d" " -f1)"
+    discard: |
+      instance_name="$(lxc ls -f csv | grep shspectr-test | grep "$SPREAD_SYSTEM_ADDRESS" | cut -f1 -d",")"
+      lxc delete -f "$instance_name"
+    systems:
+      - ubuntu-26.04:
+          username: spread
+          workers: 1
+
+suites:
+  tests/:
+    summary: ShellSpectre system tests
+
+path: /root/shspectr
+
+include:
+  - target/debug/shspectr
+  - shspectr-ebpf/target/bpfel-unknown-none/release/shspectr-ebpf
+  - tests/
+  - spread.yaml
+
+exclude:
+  - .git
+
+prepare: |
+  apt-get update -qq
+  apt-get install -y -qq sqlite3
+
+  # Install pre-built shspectr artifacts
+  install -Dm755 "$SPREAD_PATH/target/debug/shspectr" /usr/local/bin/shspectr
+  install -d /usr/local/lib/shspectr
+  install -m644 \
+    "$SPREAD_PATH/shspectr-ebpf/target/bpfel-unknown-none/release/shspectr-ebpf" \
+    /usr/local/lib/shspectr/shspectr-ebpf
+
+  # Install and start shspectr service
+  install -m644 "$SPREAD_PATH/tests/lib/shspectr-test.service" \
+    /etc/systemd/system/shspectr-test.service
+  systemctl daemon-reload
+  systemctl start shspectr-test.service
+
+  # Wait for shspectr to be ready (web UI on port 3000)
+  while ! nc -zw1 localhost 3000 2>/dev/null; do sleep 0.5; done

@@ -1,0 +1,7 @@
+summary: Write event captures echo output
+execute: |
+  /bin/echo 'shspectr-test-marker'
+
+  sqlite3 "$DB_PATH" \
+    "SELECT data FROM events WHERE event_type = 'write'" \
+    | MATCH shspectr-test-marker

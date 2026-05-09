@@ -1,0 +1,19 @@
+summary: Events in the same PTY session share a session_id
+execute: |
+  # Run multiple commands in a single PTY session
+  script -qc "ls /tmp >/dev/null; whoami >/dev/null" /dev/null
+
+  # Count distinct session_ids for ls and whoami exec events
+  unique_sessions=$(sqlite3 "$DB_PATH" \
+    "SELECT COUNT(DISTINCT session_id) FROM events
+     WHERE event_type = 'exec'
+     AND (filename LIKE '%/ls' OR filename LIKE '%/whoami')")
+  test "$unique_sessions" -eq 1
+
+  # Verify session_id starts with ox_
+  sqlite3 "$DB_PATH" \
+    "SELECT session_id FROM events
+     WHERE event_type = 'exec'
+     AND (filename LIKE '%/ls' OR filename LIKE '%/whoami')
+     LIMIT 1" \
+    | MATCH "^ox_"

@@ -1,0 +1,7 @@
+summary: Exec event captures ls
+execute: |
+  ls /tmp
+
+  sqlite3 "$DB_PATH" \
+    "SELECT filename FROM events WHERE event_type = 'exec'" \
+    | MATCH ls

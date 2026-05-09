@@ -1,0 +1,11 @@
+summary: PTY processes have non-zero tty_nr
+execute: |
+  # Run a command in a PTY via script(1)
+  script -qc "ls /tmp" /dev/null
+
+  # All exec events from PTY should have tty_nr != 0
+  zero_tty=$(sqlite3 "$DB_PATH" \
+    "SELECT COUNT(*) FROM events
+     WHERE event_type = 'exec' AND tty_nr = 0
+     AND comm = 'ls'")
+  test "$zero_tty" -eq 0

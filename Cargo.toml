@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["shspectr", "shspectr-common", "shspectr-web", "tests/system"]
+members = ["shspectr", "shspectr-common", "shspectr-web"]
 exclude = ["shspectr-ebpf"]
 
 [workspace.dependencies]

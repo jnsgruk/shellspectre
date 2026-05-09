@@ -1,0 +1,13 @@
+summary: SQLite sink stores events with correct schema and backfilled exit codes
+execute: |
+  ls /tmp
+  /usr/bin/true
+  /usr/bin/false || /usr/bin/true
+
+  HELPER="$SPREAD_PATH/tests/lib/assert_db.py"
+
+  python3 "$HELPER" check-schema
+  python3 "$HELPER" check-no-orphans
+  python3 "$HELPER" check-exit-code /usr/bin/ls 0
+  python3 "$HELPER" check-exit-code /usr/bin/true 0
+  python3 "$HELPER" check-exit-code /usr/bin/false 1

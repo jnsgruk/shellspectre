@@ -1,0 +1,16 @@
+summary: Exit events capture exit codes
+execute: |
+  /bin/true
+  /bin/false || true
+
+  # true exited 0
+  result=$(sqlite3 "$DB_PATH" \
+    "SELECT COUNT(*) FROM events
+     WHERE event_type = 'exit' AND comm = 'true' AND exit_code = 0")
+  test "$result" -ge 1
+
+  # false exited 1
+  result=$(sqlite3 "$DB_PATH" \
+    "SELECT COUNT(*) FROM events
+     WHERE event_type = 'exit' AND comm = 'false' AND exit_code = 1")
+  test "$result" -ge 1

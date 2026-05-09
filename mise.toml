@@ -1,6 +1,8 @@
 [tools]
 rust = "latest"
 prek = "latest"
+go = "latest"
+"go:github.com/canonical/spread/cmd/spread" = "latest"
 
 [tasks.build-ebpf]
 description = "Build the eBPF crate (requires nightly)"
@@ -16,8 +18,9 @@ description = "Run userspace tests"
 run = "cargo test -p shspectr -p shspectr-common -p shspectr-web"
 
 [tasks.test-system]
-description = "Run system integration tests (requires LXD)"
-run = "cargo test -p shspectr-system-tests -- --test-threads=1"
+description = "Run system integration tests (requires LXD + spread)"
+depends = ["build"]
+run = "spread -v"
 
 [tasks.fmt]
 description = "Format all Rust code"

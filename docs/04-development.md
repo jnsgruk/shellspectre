@@ -53,22 +53,41 @@ Located in `shspectr-web/tests/`. HTTP-level tests using reqwest against a real 
 ### System Tests (End-to-End)
 
 ```sh
-mise run test-system  # Requires LXD; runs with --test-threads=1
+mise run test-system  # Requires LXD + spread; builds first, then runs spread -v
 ```
 
-Provisions a single LXD VM shared across all tests via `LazyLock`, installs `shspectr` once, then runs each test against the same VM. Tests use `TestHarness` for the common start/exercise/stop/collect workflow and typed `Event` structs for assertions.
+System tests use [spread](https://github.com/canonical/spread) — a full-system test runner that provisions LXD VMs, syncs project artifacts, and runs shell-script tests.
 
-**Architecture:**
+**How it works:**
 
-- **Shared VM fixture** (`fixture.rs`): A `LazyLock<Mutex<SharedState>>` provisions one VM on first access and installs artifacts once. All tests reuse it.
-- **Systemd drop-in** (`vm.rs`): The `shspectr-test.service` unit is baked into the base VM image. Tests write a drop-in env file (`/etc/shspectr-test.env`) with extra args — no heredoc or `daemon-reload` at runtime.
-- **In-VM readiness polling** (`shspectr.rs`): A single SSH command runs a polling loop inside the VM, replacing per-iteration SSH round-trips.
-- **Test harness** (`harness.rs`): `TestHarness::capture()` encapsulates start/exercise/stop/collect into one call. Returns typed `Event` structs.
-- **Typed events** (`event.rs`): `Event` struct deserialises the tracing JSON format (fields nested under `"fields"`). Replaces brittle `line.contains()` matching.
+1. `spread.yaml` defines an `adhoc` LXD backend that launches an Ubuntu 26.04 VM
+2. The global `prepare` installs the pre-built `shspectr` binary and eBPF artifact, starts a systemd service (`shspectr-test.service`), and waits for the web UI on port 3000
+3. Each test is a `task.yaml` file containing shell commands that run in the VM and assert against the SQLite database using `sqlite3` queries and spread's `MATCH`/`NOMATCH`
 
-SSH helpers use isolated `known_hosts` state so tests do not depend on or modify the user's real SSH configuration. Test VMs are cleaned up via RAII and stale `shspectr-test-*` instances are deleted opportunistically before provisioning. The smoke test provisions its own VM independently to validate the provisioning code path.
+**Test structure:**
 
-The standalone web server does not create the database. Start the collector with `--output sqlite` first so the DB schema exists before running `shspectr-web`.
+```
+spread.yaml
+tests/
+  lib/
+    shspectr-test.service     # systemd unit installed in VM
+    assert_db.py              # SQLite assertion helper (stdlib only)
+    cloud-config.yaml             # Cloud-init config for LXD VMs
+  exec-event/task.yaml
+  exit-event/task.yaml
+  io-write-event/task.yaml
+  io-read-event/task.yaml
+  filter-pty/task.yaml
+  session-correlation/task.yaml
+  sqlite-sink/task.yaml
+```
+
+**Running and debugging:**
+
+- `spread -v` — run all tests with verbose output
+- `spread -reuse` — keep VMs alive across runs for fast iteration
+- `spread -debug` — drop into a shell at the failure point
+- `spread tests/exec-event` — run a single test
 
 The eBPF crate cannot be unit tested (`#![no_std]`, BPF target). All BPF logic is tested through system tests.
 
