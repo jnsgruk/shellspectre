@@ -17,6 +17,14 @@ ShellSpectre attaches eBPF tracepoints to seven syscalls (`execve`, `read`, `wri
 
 Nothing is injected into monitored processes. No shells are wrapped. No LD_PRELOAD. The recorder is invisible to the workloads it observes.
 
+## Demo Video
+
+You can watch the demo/showcase video on Youtube:
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=Y7Ywei9jMIo" target="_blank"><img src="https://img.youtube.com/vi/Y7Ywei9jMIo/0.jpg" alt="Shell Spectre Youtube Video" width="600"></a>
+</p>
+
 ## Tech Stack
 
 | Layer | Technology |
